@@ -28,16 +28,16 @@ extern const unsigned short backgroundPal[256];
 extern const unsigned short menuBGPal[256];
 
 #define girderMapLen 1024
-extern const int girderMap[1024];
+extern const unsigned short girderMap[1024];
 
 #define fenceBGMapLen 1024
-extern const int fenceBGMap[1024];
+extern const unsigned short fenceBGMap[1024];
 
 #define buildingBGMapLen 1024
-extern const int buildingBGMap[1024];
+extern const unsigned short buildingBGMap[1024];
 
 #define cloudBGMapLen 1024
-extern const int cloudBGMap[1024];
+extern const unsigned short cloudBGMap[1024];
 
 #endif // GRIT_LEVELBG_H
 
