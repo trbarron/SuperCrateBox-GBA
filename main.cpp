@@ -12,7 +12,12 @@ void enterMenu(int menu);
 
 std::string toString(int number);
 void drawText(int x, int y, std::string string);
+void drawTextCentered(int y, std::string string);
 void clearText();
+
+const char* weaponName(int weapon);
+void loadHighScore();
+void saveHighScore();
 
 void shoot();
 void explode(int x, int y);
@@ -36,6 +41,24 @@ Crate crate(0, 0, 0);
 
 int weapon;
 int score;
+int highScore;
+
+//Name of the weapon from the crate just collected, shown for a short while
+//at the place the crate was picked up from
+std::string pickupText;
+int pickupTimer;
+int pickupX;
+int pickupY;
+const int PICKUP_SHOW_FRAMES = 90;
+
+//Cartridge SRAM (8-bit access only) is used to keep the high score between
+//play sessions. The first two bytes are a tag, so that blank or unavailable
+//SRAM reads back as "no high score yet" rather than as garbage.
+#define SRAM_BASE ((volatile uint8_t *) 0x0E000000)
+
+//Emulators and flash carts work out the save type by looking for this
+//string in the ROM image, so it has to survive being otherwise unused.
+const char saveTypeTag[] __attribute__((used)) = "SRAM_V113";
 
 void init(){
 	// Set display options.
@@ -88,6 +111,8 @@ void init(){
 	for(int i = 0; i < girderMapLen; i++){
 		SetTile(30, i%32, i/32, girderMap[i]);
 	};
+	
+	loadHighScore();
 }
 
 void gameInit(){
@@ -107,6 +132,10 @@ void gameInit(){
 	
 	weapon = 1;
 	score = 0;
+	pickupText = "";
+	pickupTimer = 0;
+	pickupX = 0;
+	pickupY = 0;
 
 	//Set-up Objects
 	ClearObjects();
@@ -309,6 +338,15 @@ int main()
 			crate.setDead(true);
 			weapon = crate.getWeapon();
 			score++;
+			if(score > highScore){
+				highScore = score;
+				saveHighScore();
+			}
+			pickupText = weaponName(weapon);
+			pickupTimer = PICKUP_SHOW_FRAMES;
+			//Remember where the crate was, before it is moved somewhere else
+			pickupX = crate.getX();
+			pickupY = crate.getY();
 		}
 		
 		if(crate.isDead()){
@@ -449,6 +487,21 @@ int main()
 
 		drawText(112,10,toString(score));
 		
+		if(pickupTimer > 0){
+			//Centre the name over the crate, sitting just above it, and keep
+			//it on screen when the crate was near an edge
+			int textWidth = (int) pickupText.length() * 8;
+			int textX = pickupX + (crate.getWidth()/2) - (textWidth/2);
+			if(textX < 0)textX = 0;
+			if(textX > SCREEN_WIDTH - textWidth)textX = SCREEN_WIDTH - textWidth;
+			
+			int textY = pickupY - 10;
+			if(textY < 0)textY = 0;
+			
+			drawText(textX, textY, pickupText);
+			pickupTimer--;
+		}
+		
 		WaitVSync();
 		UpdateObjects();
 		clearText();
@@ -492,6 +545,8 @@ void enterMenu(int menu){
 			drawText(60,20,"Super Crate Box");
 			drawText(105,65,"PLAY");
 			drawText(93,90,"CREDITS");
+			drawTextCentered(125,"HIGH SCORE");
+			drawTextCentered(137,toString(highScore));
 			
 			if(option == 0)drawText(90, 65, ">      <");
 			if(option == 1)drawText(78, 90, ">         <");
@@ -572,6 +627,7 @@ int activeLetters = 0;
 void drawText(int x, int y, std::string string){
 	int startPos = activeLetters;
 	for(int i = 0; i < string.length(); i++){
+		if(startPos+i+45 >= NUM_OBJECTS)break;
 		activeLetters++;
 		SetObject(startPos+i+45,
 	          ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(y),
@@ -580,11 +636,45 @@ void drawText(int x, int y, std::string string){
 	}
 }
 
+void drawTextCentered(int y, std::string string){
+	drawText((SCREEN_WIDTH - ((int) string.length() * 8)) / 2, y, string);
+}
+
 void clearText(){
 	for(int i = 0; i < activeLetters; i++){
 		SetObject(i+45, ATTR0_HIDE, 0, 0);
 	}
 	activeLetters = 0;
+}
+
+const char* weaponName(int weapon){
+	switch(weapon){
+		case 0:return "BAZOOKA";
+		case 1:return "MACHINE GUN";
+		case 2:return "SHOTGUN";
+		case 3:return "REVOLVER";
+		case 4:return "DISC GUN";
+		case 5:return "MINE";
+		case 6:return "GRENADE LAUNCHER";
+		case 7:return "LASER GUN";
+		case 8:return "MINIGUN";
+	}
+	return "";
+}
+
+void loadHighScore(){
+	if(SRAM_BASE[0] != 'S' || SRAM_BASE[1] != 'C'){
+		highScore = 0;
+		return;
+	}
+	highScore = SRAM_BASE[2] | (SRAM_BASE[3] << 8);
+}
+
+void saveHighScore(){
+	SRAM_BASE[0] = 'S';
+	SRAM_BASE[1] = 'C';
+	SRAM_BASE[2] = highScore & 0xFF;
+	SRAM_BASE[3] = (highScore >> 8) & 0xFF;
 }
 
 void shoot(){
