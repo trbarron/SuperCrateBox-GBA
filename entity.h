@@ -221,12 +221,18 @@ public:
 		lift = 0;
 		charger = 0;
 		if(type == 6)chargeTime = 60;
+		else if(type == 8)chargeTime = 3;	//a katana swing is brief
+		else if(type == 9)chargeTime = 8;	//blast debris fades quickly
 		else chargeTime = 15;
 		bounce = false;
 		width = 4;
 		height = 4;
 		dead = false;
-		frame = 40+type;
+		//The slash borrows the blade sprite and debris the machine gun round;
+		//tiles 48 and up belong to the monsters
+		if(type == 8)frame = 31;
+		else if(type == 9)frame = 41;
+		else frame = 40+type;
 	}
 	
 	~Bullet(){
@@ -237,13 +243,14 @@ public:
 	}
 
 	void setType(int type){
-		type = type;
+		this->type = type;
 	}
 	
 	int getDamage(){
 		if(type == 0 || type == 4 || type == 5 || type == 6 || type == 7)return 5;
 		if(type == 1 || type == 3)return 1;
 		if(type == 2)return 3;
+		if(type == 8)return 2;	//one hit kills a small monster, two a large one
 		return 0;
 	}
 	
@@ -263,6 +270,10 @@ public:
 		charger++;
 		if(charger == chargeTime)return true;
 		return false;
+	}
+	
+	int getCharger(){
+		return charger;
 	}
 	
 	bool getBounce(){

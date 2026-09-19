@@ -23,7 +23,9 @@ OBJECTS = \
 	gba.o \
 	font.o \
 	background.o \
-	sprites.o
+	sprites.o \
+	playerskins.o \
+	arenas.o
 
 # The default target to make if none is specified.
 all: $(TARGET).gba

@@ -6,6 +6,8 @@
 #include "font.h"
 #include "background.h"
 #include "sprites.h"
+#include "playerskins.h"
+#include "arenas.h"
 #include "entity.h"
 
 void enterMenu(int menu);
@@ -19,6 +21,18 @@ const char* weaponName(int weapon);
 void drawMenuOption(int y, const std::string& label, bool selected);
 
 void applySkin(int skin);
+int skinTileBase(int skin);
+void loadArena(int index);
+void applyArenaPalette(int index);
+bool arenaUnlocked(int index);
+void buildBlastSprite();
+void updateExplosion();
+
+void startBenchmark();
+void finishBenchmark();
+void writeBenchResults();
+int benchPercentile(int percent);
+int readKeys();
 bool skinUnlocked(int skin);
 std::string skinRequirement(int skin);
 void loadProgress();
@@ -32,7 +46,10 @@ bool tryMove(int x, int y, int testX, int testY, Entity& entity);
 int checkMapCollision(int x, int y, int testX, int testY);
 bool checkEntityCollision(Entity e1, Entity e2);
 
-//Object locations - 0 = weapon, 1 = crate, 2 = player, 3-23 = enemies, 24-44 = bullets, 45-128 text
+//The 128 hardware objects, carved up. Everything is derived from the pool
+//sizes, so raising MAX_BULLETS moves the rest along rather than quietly
+//overwriting the text. Menus draw no game objects, so text starts right after
+//the player there and the whole run of slots is available for the credits.
 
 Player player(0,0);
 
@@ -40,11 +57,151 @@ std::vector<Monster> enemies;
 const int MAX_ENEMIES = 20;
 
 std::vector<Bullet> bullets;
-const int MAX_BULLETS = 20;
+const int MAX_BULLETS = 28;
+
+const int OBJ_WEAPON = 0;
+const int OBJ_CRATE = 1;
+const int OBJ_PLAYER = 2;
+const int OBJ_ENEMY_BASE = 3;
+const int OBJ_BULLET_BASE = OBJ_ENEMY_BASE + MAX_ENEMIES;
+const int OBJ_BLAST = OBJ_BULLET_BASE + MAX_BULLETS;
+const int OBJ_TEXT_GAME = OBJ_BLAST + 1;
+const int OBJ_TEXT_MENU = OBJ_ENEMY_BASE;
+
+int textBase = OBJ_TEXT_MENU;
+
+//Rockets, mines and grenades destroy everything within this many pixels of
+//where they went off, measured from the centre of each monster. The blast is
+//drawn as a black disc that swells to that size, holds, then collapses; the
+//kill follows the picture outwards so nothing dies before the disc reaches it.
+const int EXPLOSION_RADIUS = 44;
+const int EXPLOSION_GROW   = 8;		//frames spent swelling
+const int EXPLOSION_HOLD   = 20;	//about a third of a second at full size
+const int EXPLOSION_FADE   = 8;		//frames spent collapsing again
+const int EXPLOSION_FRAMES = EXPLOSION_GROW + EXPLOSION_HOLD + EXPLOSION_FADE;
+const int EXPLOSION_DEBRIS = 10;
+
+//The disc is a 64x64 sprite magnified by an affine transform, so a single
+//object covers every size it needs to be.
+const int BLAST_TILE = 304;
+const int BLAST_COLOUR = 2;		//palette entry 2 is black
+
+int explosionTimer;
+int explosionX;
+int explosionY;
 
 Crate crate(0, 0, 0);
 
+//A palette entry and what to put in it
+struct PaletteTweak{
+	unsigned char entry;
+	unsigned short colour;
+};
+
+//An arena. The girder layer doubles as the collision map - checkMapCollision
+//reads screenblock 30 directly - so a new arena is data rather than code, as
+//long as it keeps to the tile conventions: 16-20 are the deadly fire, 21-25
+//are passable, 0 is open air and everything else is solid.
+struct Arena{
+	const char* name;
+	
+	const unsigned short* girders;	//also the collision map
+	const unsigned short* fence;
+	const unsigned short* building;
+	const unsigned short* clouds;
+	
+	unsigned char playerX, playerY;
+	unsigned char monsterX, monsterY;
+	
+	const unsigned char* crateSpots;	//x,y pairs, in pixels
+	int crateCount;
+	
+	const unsigned char* fireTiles;		//x,y pairs, in tiles, animated each frame
+	int fireCount;
+	
+	//Recolouring the shared tileset is what makes the arenas look like
+	//different places. Only the entries that differ from backgroundPal are
+	//listed; the fire keeps entries 1, 8, 9 and 14, which nothing else uses,
+	//so the flames stay orange whatever the walls are made of.
+	const PaletteTweak* palette;
+	int paletteCount;
+	
+	int unlockScore;	//needed in the arena before this one
+};
+
+//Pale stone under a night sky
+const PaletteTweak templePalette[] = {
+	{10, RGB(25,24,21)}, {11, RGB(28,27,24)}, {12, RGB( 9, 8, 8)},
+	{13, RGB(18,17,15)}, {15, RGB( 7, 6, 6)}, {16, RGB(11,10, 8)},
+	{17, RGB(21,19,16)}, {18, RGB(24,23,21)}, {19, RGB(27,26,24)},
+	{20, RGB( 9, 8, 7)}, {21, RGB(17,15,12)},
+	{ 5, RGB( 6, 6,10)}, { 6, RGB( 5, 5, 8)}, { 7, RGB( 9, 9,13)},
+	{ 3, RGB(10, 9,12)}, { 4, RGB( 9, 8,11)},
+};
+
+//Cold steel, lit from nowhere in particular
+const PaletteTweak siloPalette[] = {
+	{10, RGB(16,18,20)}, {11, RGB(21,23,25)}, {12, RGB( 6, 7, 8)},
+	{13, RGB(12,14,16)}, {15, RGB( 4, 5, 6)}, {16, RGB( 7, 8,10)},
+	{17, RGB( 9,15,20)}, {18, RGB(18,20,22)}, {19, RGB(22,24,26)},
+	{20, RGB( 5, 6, 8)}, {21, RGB(11,14,17)},
+	{ 5, RGB( 6, 7, 8)}, { 6, RGB( 5, 6, 7)}, { 7, RGB( 8, 9,11)},
+	{ 3, RGB( 7, 8,10)}, { 4, RGB( 6, 7, 9)},
+};
+
+const unsigned char yardCrates[] = {
+	 80, 32,   150, 32,
+	 30, 64,   200, 64,
+	115,104,
+	 80,144,   150,144,
+};
+const unsigned char yardFire[] = { 14,19,  15,19 };
+
+const unsigned char siloCrates[] = {
+	 40, 24,   192, 24,
+	 80, 56,   152, 56,
+	 40, 88,   192, 88,
+	112,120,
+};
+
+const unsigned char templeCrates[] = {
+	 40, 32,   192, 32,
+	 24, 64,   112, 64,   208, 64,
+	 40, 96,   192, 96,
+};
+
+const Arena arenas[] = {
+	{"CONSTRUCTION YARD",
+	 girderMap, fenceBGMap, buildingBGMap, cloudBGMap,
+	 116, 76,  116, 0,
+	 yardCrates, sizeof(yardCrates)/2,
+	 yardFire, sizeof(yardFire)/2,
+	 0, 0,
+	 0},
+	
+	{"ROCKET SILO",
+	 siloGirderMap, blankMap, blankMap, cloudBGMap,
+	 116, 60,  116, 0,
+	 siloCrates, sizeof(siloCrates)/2,
+	 yardFire, sizeof(yardFire)/2,
+	 siloPalette, sizeof(siloPalette)/sizeof(siloPalette[0]),
+	 10},
+	
+	{"MOON TEMPLE",
+	 templeGirderMap, blankMap, buildingBGMap, cloudBGMap,
+	 116, 56,  116, 0,
+	 templeCrates, sizeof(templeCrates)/2,
+	 yardFire, sizeof(yardFire)/2,
+	 templePalette, sizeof(templePalette)/sizeof(templePalette[0]),
+	 10},
+};
+const int NUM_ARENAS = sizeof(arenas) / sizeof(arenas[0]);
+
+int currentArena;
+int arenaBest[NUM_ARENAS];	//best score in each, which is what unlocks the next
+
 int weapon;
+const int NUM_WEAPONS = 10;
 int score;
 int highScore;
 int lifetimeCrates;
@@ -54,6 +211,69 @@ int selectedSkin;
 //during play: emulators react to SRAM writes by flushing the save file, which
 //stutters the frame. Nothing is lost by waiting - a run can only end in death.
 bool progressDirty;
+
+//Frame timing meter, toggled with SELECT. Timer 0 counts one tick per 64
+//cycles, so a whole 280896-cycle frame is 4389 ticks. Measured from the start
+//of VBlank to the end of the next frame's work, so it covers everything except
+//the idle wait - 100% means the frame budget is exactly used up.
+const int FRAME_TICKS = 4389;
+const int TM_FREQ_64 = 1;
+const int TM_ENABLE = 0x80;
+
+bool showMeter = true;
+int frameTicks;
+int peakTicks;
+int overruns;
+
+//Benchmark: a fixed thirty second run with the player invincible and the
+//controls driven from a seeded random stream, so the same work happens every
+//time and two builds can be compared directly. Timers 2 and 3 cascade into a
+//32-bit clock for the whole run, which is what gives a real frame rate rather
+//than the 60 the vsync wait would always report.
+//
+//It deliberately measures a hard case rather than a typical one: the monster
+//pool is kept full and the weapon is rotated, because left to itself a run
+//collects no crates at all and never fires anything but the machine gun.
+const int BENCH_FRAMES = 1800;
+
+//Longer than the slowest reload, so that even the 60 frame weapons - and so
+//the explosion path - actually get to fire while they are selected
+const int BENCH_WEAPON_HOLD = 90;
+const int BENCH_SPAWN_ODDS = 6;
+const unsigned int BENCH_SEED = 20140506;
+const int TM_FREQ_1024 = 3;
+const int TM_CASCADE = 4;
+
+//Frame times are binned rather than kept, which is enough for a percentile
+//and costs a kilobyte: 512 bins of 16 ticks covers nearly two whole frames.
+const int BENCH_BINS = 512;
+const int BENCH_BIN_SHIFT = 4;
+
+int benchFrames;		//frames left to run, 0 when not benchmarking
+int benchTickSum;
+int benchPeak;
+int benchLow;
+int benchOverruns;
+int benchDeaths;
+unsigned int benchCycles;	//whole run, in units of 1024 cycles
+int benchHeldKeys;
+int benchHoldTimer;
+unsigned short benchHist[BENCH_BINS];
+
+//What the run actually did, so a frame time can be read against the work that
+//produced it - and so a change to, say, the bullet count can be seen landing
+int benchShots;
+int benchExplosions;
+int benchPeakBullets;
+int benchPeakEnemies;
+
+//Carried across frames by the game loop. Global so that starting a game - and
+//so a benchmark - resets them; otherwise a second run begins on a different
+//animation phase and consumes the random stream differently to the first.
+int cloudScroll;
+int loopSlower;
+bool shootCoolDown;
+int reloadTimer;
 
 //Name of the weapon from the crate just collected, shown for a short while
 //at the place the crate was picked up from
@@ -84,6 +304,10 @@ const Skin skins[] = {
 	{"VLAMBEER",  {RGB(31,29,16), RGB(30,23, 5), RGB(23,15, 2), RGB(16,10, 1)},   0, 1000},
 };
 const int NUM_SKINS = sizeof(skins) / sizeof(skins[0]);
+
+//Skin 0 wears the original sprite tiles; the rest are loaded above the font,
+//14 frames each. Keep the table above in step with tools/genskins.py.
+const int SKIN_TILE_BASE = 192;
 
 //Cartridge SRAM (8-bit access only) is used to keep progress between play
 //sessions. The save starts with a tag, so that blank or unavailable SRAM
@@ -120,47 +344,28 @@ void init(){
 	
 	LoadTileData(4, 0, spritesTiles, spritesTilesLen);
 	LoadTileData(4, 64, font_bold, 8192);
+	LoadTileData(4, SKIN_TILE_BASE, playerSkinTiles, playerSkinTilesLen);
+	buildBlastSprite();
 	LoadPaletteObjData(0, spritesPal, spritesPalLen);
 	
-	//Clear backgrounds
-	for (int y = 0; y < 32; ++y){
-	for (int x = 0; x < 32; ++x){
-		SetTile(30, x, y, 0);
-		SetTile(29, x, y, 0);
-		SetTile(28, x, y, 0);
-		SetTile(27, x, y, 0);
-	}
-	}
-	
-	//Set-up backgrounds from maps
-	for(int i = 0; i < cloudBGMapLen; i++){
-		SetTile(27, i%32, i/32, cloudBGMap[i]);
-	};
-	for(int i = 0; i < buildingBGMapLen; i++){
-		SetTile(28, i%32, i/32, buildingBGMap[i]);
-	};
-	for(int i = 0; i < fenceBGMapLen; i++){
-		SetTile(29, i%32, i/32, fenceBGMap[i]);
-	};
-	for(int i = 0; i < girderMapLen; i++){
-		SetTile(30, i%32, i/32, girderMap[i]);
-	};
-	
 	loadProgress();
+	loadArena(currentArena);
+	applyArenaPalette(currentArena);
 	applySkin(selectedSkin);
 }
 
 void gameInit(){
+	loadArena(currentArena);
+	applyArenaPalette(currentArena);
+	
 	(&player)->~Player();
-    new (&player) Player(116,76);
+    new (&player) Player(arenas[currentArena].playerX, arenas[currentArena].playerY);
 	
-	for(int i = 0; i < enemies.size(); i++){
-		enemies.at(i).setDead(true);
-	}
-	
-	for(int i = 0; i < bullets.size(); i++){
-		bullets.at(i).setDead(true);
-	}
+	//Emptied rather than just marked dead: spawnBullet and spawnMonster take a
+	//different path once a pool has been filled once, so leaving them at full
+	//size would make a second run behave differently to the first
+	enemies.clear();
+	bullets.clear();
 	
 	(&crate)->~Crate();
     new (&crate) Crate(0,0,0);
@@ -168,12 +373,23 @@ void gameInit(){
 	weapon = 1;
 	score = 0;
 	applySkin(selectedSkin);
+	
+	cloudScroll = 0;
+	loopSlower = 0;
+	shootCoolDown = true;
+	reloadTimer = 0;
+	
+	peakTicks = 0;
+	overruns = 0;
+	explosionTimer = 0;
 	pickupText = "";
 	pickupTimer = 0;
 	pickupX = 0;
 	pickupY = 0;
 
 	//Set-up Objects
+	clearText();
+	textBase = OBJ_TEXT_GAME;
 	ClearObjects();
 	
 	//Weapon
@@ -194,42 +410,55 @@ void gameInit(){
 	SetObject(2,
 	          ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(player.getY()),
 			  ATTR1_SIZE(0) | ATTR1_X(player.getX()),
-			  ATTR2_ID8(1));
+			  ATTR2_ID8(skinTileBase(selectedSkin) + 1));
 }
 
 int main()
 {
 	init();
 	
+#ifdef BENCH_AUTORUN
+	startBenchmark();
+#else
 	enterMenu(0);
+#endif
 
-	int cloudScroll = 0;
-	int loopSlower = 0;
-	bool shootCoolDown = true;
-	int reloadTimer = 0;
+	int meterCoolDown = 0;
+	
+	//Free-running timer for the frame meter
+	REG_TM0D = 0;
+	REG_TM0CNT = TM_ENABLE | TM_FREQ_64;
 	
 	//GAME LOOP
 	while (true)
 	{	
+		if(meterCoolDown > 0)meterCoolDown--;
+		if((REG_KEYINPUT & KEY_SELECT) == 0 && meterCoolDown == 0){
+			showMeter = !showMeter;
+			meterCoolDown = 30;
+		}
+		
 		//INPUT
-		if((REG_KEYINPUT & KEY_RIGHT) == 0){
+		int keys = readKeys();
+		
+		if((keys & KEY_RIGHT) == 0){
 			tryMove(2,0,player.getWidth()-2,player.getHeight()/2,player);
 			player.setRunning(true);
 			player.setDir(true);
 		}
-		if((REG_KEYINPUT & KEY_LEFT) == 0){
+		if((keys & KEY_LEFT) == 0){
 			tryMove(-2,0,0,player.getHeight()/2,player);
 			player.setRunning(true);
 			player.setDir(false);
 		}
-		if((REG_KEYINPUT & KEY_UP) == 0 || (REG_KEYINPUT & KEY_B) == 0){
+		if((keys & KEY_UP) == 0 || (keys & KEY_B) == 0){
 			if(player.getLanded()){
 				player.jump();
 				player.updateFrame();
 			}
 			player.setJumpHeight(player.getJumpHeight()+4);
 		}
-		if((REG_KEYINPUT & KEY_A) == 0){
+		if((keys & KEY_A) == 0){
 			if(shootCoolDown){
 				if(weapon == 8){
 					if(player.getDir())tryMove(-2,0,0,player.getHeight()/2,player);
@@ -272,9 +501,9 @@ int main()
 					}
 				}
 				tryMove(0,2,enemies.at(i).getWidth()/2,enemies.at(i).getHeight(),enemies.at(i));
-				ObjBuffer[i+3].attr0 &= ~(ATTR0_HIDE);
+				ObjBuffer[i+OBJ_ENEMY_BASE].attr0 &= ~(ATTR0_HIDE);
 			}else{
-				ObjBuffer[i+3].attr0 |= ATTR0_HIDE;
+				ObjBuffer[i+OBJ_ENEMY_BASE].attr0 |= ATTR0_HIDE;
 			}
 		}
 		
@@ -291,10 +520,10 @@ int main()
 					
 				}else if(bullets.at(i).getType() == 6){
 					if(player.getDir()){
-						ObjBuffer[i+24].attr1 &= ~(ATTR1_HFLIP);
+						ObjBuffer[i+OBJ_BULLET_BASE].attr1 &= ~(ATTR1_HFLIP);
 						bullets.at(i).move(player.getX()+8, player.getY());
 					}else{
-						ObjBuffer[i+24].attr1 |= ATTR1_HFLIP;
+						ObjBuffer[i+OBJ_BULLET_BASE].attr1 |= ATTR1_HFLIP;
 						bullets.at(i).move(player.getX()-8, player.getY());
 					}	
 					if(bullets.at(i).charge()){
@@ -304,10 +533,27 @@ int main()
 						else number = (0 + player.getX())/8;
 	
 						for(int i = 0; i < number; i++){
-							spawnBullet(7);
+							if(spawnBullet(7) < 0)break;
 						}
 					}
 				}else if(bullets.at(i).getType() == 7){
+					if(bullets.at(i).charge())bullets.at(i).setDead(true);
+				}else if(bullets.at(i).getType() == 9){
+					//Blast debris - thrown outwards, gone in a moment, and it
+					//passes through scenery rather than piling up against it
+					int step = 2;
+					if(!bullets.at(i).getDir())step = -2;
+					
+					bullets.at(i).move(bullets.at(i).getX() + step,
+					                   bullets.at(i).getY() + bullets.at(i).getLift());
+					
+					if(bullets.at(i).charge())bullets.at(i).setDead(true);
+				}else if(bullets.at(i).getType() == 8){
+					//Katana slash - held just in front of the player for a
+					//moment rather than travelling anywhere
+					if(player.getDir())bullets.at(i).move(player.getX()+6, player.getY());
+					else bullets.at(i).move(player.getX()-6, player.getY());
+					
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
 				}else{
 					if(bullets.at(i).getDir()){
@@ -318,7 +564,8 @@ int main()
 							}else{
 								bullets.at(i).setDead(true);
 								if(bullets.at(i).getType() == 0
-								|| bullets.at(i).getType() == 4){
+								|| bullets.at(i).getType() == 4
+								|| bullets.at(i).getType() == 5){
 									explode(bullets.at(i).getX(), bullets.at(i).getY());
 								}
 							}
@@ -331,16 +578,17 @@ int main()
 							}else{
 								bullets.at(i).setDead(true);
 								if(bullets.at(i).getType() == 0
-								|| bullets.at(i).getType() == 4){
+								|| bullets.at(i).getType() == 4
+								|| bullets.at(i).getType() == 5){
 									explode(bullets.at(i).getX(), bullets.at(i).getY());
 								}
 							}
 						}
 					}
 				}
-				ObjBuffer[i+24].attr0 &= ~(ATTR0_HIDE);
+				ObjBuffer[i+OBJ_BULLET_BASE].attr0 &= ~(ATTR0_HIDE);
 			}else{
-				ObjBuffer[i+24].attr0 |= ATTR0_HIDE;
+				ObjBuffer[i+OBJ_BULLET_BASE].attr0 |= ATTR0_HIDE;
 			}
 		}
 		
@@ -354,12 +602,23 @@ int main()
 					if(!bullets.at(k).isDead()){
 						if(checkEntityCollision(bullets.at(k), enemies.at(i))){
 							enemies.at(i).hurt(bullets.at(k).getDamage());
+							
+							//A katana blow spins a large monster about. Only on
+							//the opening frame of the swing, or the slash would
+							//flip it once per frame it stays in contact.
+							if(bullets.at(k).getType() == 8
+							&& bullets.at(k).getCharger() == 1
+							&& !enemies.at(i).getSize()){
+								enemies.at(i).setDir(!enemies.at(i).getDir());
+							}
 							if(bullets.at(k).getType() != 3
 							&& bullets.at(k).getType() != 6
-							&& bullets.at(k).getType() != 7){
+							&& bullets.at(k).getType() != 7
+							&& bullets.at(k).getType() != 8){
 								bullets.at(k).setDead(true);
 								if(bullets.at(k).getType() == 0
-								|| bullets.at(k).getType() == 4){
+								|| bullets.at(k).getType() == 4
+								|| bullets.at(k).getType() == 5){
 									explode(bullets.at(k).getX(), bullets.at(k).getY());
 								}
 							}
@@ -376,6 +635,7 @@ int main()
 			score++;
 			lifetimeCrates++;
 			if(score > highScore)highScore = score;
+			if(score > arenaBest[currentArena])arenaBest[currentArena] = score;
 			progressDirty = true;
 			pickupText = weaponName(weapon);
 			pickupTimer = PICKUP_SHOW_FRAMES;
@@ -385,25 +645,12 @@ int main()
 		}
 		
 		if(crate.isDead()){
-			switch(rand() % 7){
-				case 0:crate.move(80,32);
-				break;
-				case 1:crate.move(150,32);
-				break;
-				case 2:crate.move(30,64);
-				break;
-				case 3:crate.move(200,64);
-				break;
-				case 4:crate.move(115,104);
-				break;
-				case 5:crate.move(80,144);
-				break;
-				case 6:crate.move(150,144);
-				break;
-			}
+			const Arena& arena = arenas[currentArena];
+			int spot = rand() % arena.crateCount;
+			crate.move(arena.crateSpots[spot*2], arena.crateSpots[(spot*2)+1]);
 			int newWep = 0;
-			do newWep = rand() % 9;
-			while(newWep == weapon || newWep == 6);
+			do newWep = rand() % NUM_WEAPONS;
+			while(newWep == weapon);
 			crate.setWeapon(newWep);
 			crate.setDead(false);
 		}
@@ -413,8 +660,10 @@ int main()
 			cloudScroll++;
 			REG_BG3HOFS = cloudScroll;
 		
-			SetTile(30, 14, 19, 16+rand()%5);
-			SetTile(30, 15, 19, 16+rand()%5);
+			const Arena& arena = arenas[currentArena];
+			for(int i = 0; i < arena.fireCount; i++){
+				SetTile(30, arena.fireTiles[i*2], arena.fireTiles[(i*2)+1], 16+rand()%5);
+			}
 			
 			player.updateFrame();
 			
@@ -423,9 +672,9 @@ int main()
 					enemies.at(i).updateFrame();
 				}
 			}
-			ObjBuffer[2].attr2 = ATTR2_ID8(player.getFrame());
+			ObjBuffer[2].attr2 = ATTR2_ID8(skinTileBase(selectedSkin) + player.getFrame());
 			for(int i = 0; i < enemies.size(); i++){
-				ObjBuffer[i+3].attr2 = ATTR2_ID8(enemies.at(i).getFrame());
+				ObjBuffer[i+OBJ_ENEMY_BASE].attr2 = ATTR2_ID8(enemies.at(i).getFrame());
 			}
 			
 		}
@@ -439,7 +688,7 @@ int main()
 			if(reloadTimer >= 45){
 				shootCoolDown = true;
 			}
-		}else if (weapon == 3){
+		}else if (weapon == 3 || weapon == 9){
 			if(reloadTimer >= 20){
 				shootCoolDown = true;
 			}
@@ -448,15 +697,25 @@ int main()
 				shootCoolDown = true;
 			}
 		}else{
-			if(reloadTimer >= 5){
+			//Minigun. At 2 frames it fires 30 a second, which is what the pool
+			//size has to be able to carry - a round takes about 56 frames to
+			//cross from the middle of the arena to a wall.
+			if(reloadTimer >= 2){
 				shootCoolDown = true;
 			}
 		}
 		if(reloadTimer > 1000)reloadTimer = 60;
 		
 		//Monster spawner
-		if(rand()%100 == 0){
+		int spawnOdds = 100;
+		if(benchFrames > 0)spawnOdds = BENCH_SPAWN_ODDS;
+		
+		if(rand()%spawnOdds == 0){
 			spawnMonster();	
+		}
+		
+		if(benchFrames > 0 && ((BENCH_FRAMES - benchFrames) % BENCH_WEAPON_HOLD) == 0){
+			weapon = (weapon + 1) % NUM_WEAPONS;
 		}
 		
 		//Player state updates
@@ -479,16 +738,26 @@ int main()
 			
 		for(int i = 0; i < enemies.size(); i++){
 			if(!enemies.at(i).isDead()){
-				if(!enemies.at(i).getDir())ObjBuffer[i+3].attr1 |= ATTR1_HFLIP;
-				else ObjBuffer[i+3].attr1 &= ~(ATTR1_HFLIP);
+				if(!enemies.at(i).getDir())ObjBuffer[i+OBJ_ENEMY_BASE].attr1 |= ATTR1_HFLIP;
+				else ObjBuffer[i+OBJ_ENEMY_BASE].attr1 &= ~(ATTR1_HFLIP);
 			}
 		}
+		
+		updateExplosion();
 		
 		player.update();
 		
 		if(player.isDead()){
-			saveProgress();
-			enterMenu(2);
+			if(benchFrames > 0){
+				//Invincible for the benchmark - drop back in and carry on, so
+				//a bad run still measures a full ten seconds of work
+				benchDeaths++;
+				(&player)->~Player();
+				new (&player) Player(arenas[currentArena].playerX, arenas[currentArena].playerY);
+			}else{
+				saveProgress();
+				enterMenu(2);
+			}
 		}
 	
 		//Render
@@ -511,19 +780,28 @@ int main()
 		
 		for(int i = 0; i < enemies.size(); i++){
 			if(!enemies.at(i).isDead()){
-				SetObjectX(i+3, enemies.at(i).getX());
-				SetObjectY(i+3, enemies.at(i).getY());
+				SetObjectX(i+OBJ_ENEMY_BASE, enemies.at(i).getX());
+				SetObjectY(i+OBJ_ENEMY_BASE, enemies.at(i).getY());
 			}
 		}
 		
 		for(int i = 0; i < bullets.size(); i++){
 			if(!bullets.at(i).isDead()){
-				SetObjectX(i+24, bullets.at(i).getX());
-				SetObjectY(i+24, bullets.at(i).getY());
+				SetObjectX(i+OBJ_BULLET_BASE, bullets.at(i).getX());
+				SetObjectY(i+OBJ_BULLET_BASE, bullets.at(i).getY());
 			}
 		}
 
 		drawText(112,10,toString(score));
+		
+		if(showMeter && benchFrames <= 0){
+			drawText(  4, 150, "CPU");
+			drawText( 32, 150, toString(frameTicks * 100 / FRAME_TICKS));
+			drawText( 72, 150, "PK");
+			drawText( 96, 150, toString(peakTicks * 100 / FRAME_TICKS));
+			drawText(136, 150, "OV");
+			drawText(160, 150, toString(overruns));
+		}
 		
 		if(pickupTimer > 0){
 			//Centre the name over the crate, sitting just above it, and keep
@@ -540,10 +818,57 @@ int main()
 			pickupTimer--;
 		}
 		
+		frameTicks = REG_TM0D;
+		if(frameTicks > peakTicks)peakTicks = frameTicks;
+		if(frameTicks > FRAME_TICKS)overruns++;
+		
+		if(benchFrames > 0){
+			int live = 0;
+			for(int i = 0; i < bullets.size(); i++)if(!bullets.at(i).isDead())live++;
+			if(live > benchPeakBullets)benchPeakBullets = live;
+			
+			live = 0;
+			for(int i = 0; i < enemies.size(); i++)if(!enemies.at(i).isDead())live++;
+			if(live > benchPeakEnemies)benchPeakEnemies = live;
+			
+			benchTickSum += frameTicks;
+			if(frameTicks > benchPeak)benchPeak = frameTicks;
+			if(frameTicks < benchLow)benchLow = frameTicks;
+			if(frameTicks > FRAME_TICKS)benchOverruns++;
+			
+			int bin = frameTicks >> BENCH_BIN_SHIFT;
+			if(bin >= BENCH_BINS)bin = BENCH_BINS - 1;
+			benchHist[bin]++;
+		}
+		
 		WaitVSync();
+		
+		//Restart the measurement at the top of VBlank, so that the object and
+		//text updates below are counted as part of the frame's work
+		REG_TM0CNT = 0;
+		REG_TM0D = 0;
+		REG_TM0CNT = TM_ENABLE | TM_FREQ_64;
+		
 		UpdateObjects();
 		clearText();
 		loopSlower++;
+		
+		if(benchFrames > 0){
+			benchFrames--;
+			
+#ifdef BENCH_HEARTBEAT
+			//Diagnostic only, and never every frame: an SRAM write makes the
+			//emulator flush its save file, which is itself a stall
+			if((benchFrames % 60) == 0){
+				SRAM_BASE[128] = 'H';
+				SRAM_BASE[129] = 'B';
+				SRAM_BASE[130] = benchFrames & 0xFF;
+				SRAM_BASE[131] = (benchFrames >> 8) & 0xFF;
+			}
+#endif
+			
+			if(benchFrames == 0)finishBenchmark();
+		}
 	}
 
 	return 0;
@@ -552,13 +877,15 @@ int main()
 
 void enterMenu(int menu){
 	LoadPaletteBGData(0, menuBGPal, menuBGPalLen);
+	clearText();
 	
 	bool active = true;
 	int option = 0;
 	int skinChoice = 0;
+	int arenaChoice = 0;
 	int keyPressCoolDown = 30;
 	int navCoolDown = 0;
-	const int MAIN_MENU_OPTIONS = 3;
+	const int MAIN_MENU_OPTIONS = 5;
 	if(menu == 0)ClearObjects();
 	
 	//MENU LOOP
@@ -568,6 +895,14 @@ void enterMenu(int menu){
 		navCoolDown--;
 		if(navCoolDown <= 0)navCoolDown = 0;
 		clearText();
+		
+		//Game over is drawn over the frozen arena, so its text has to stay
+		//clear of the game objects. Every other page starts from a blank
+		//screen, so the text can begin right after the player and the credits
+		//get the whole run of slots they need.
+		if(menu == 2)textBase = OBJ_TEXT_GAME;
+		else textBase = OBJ_TEXT_MENU;
+		
 		switch(menu){
 			case 0://Main menu
 			if((REG_KEYINPUT & KEY_UP) == 0 && navCoolDown == 0){
@@ -588,17 +923,26 @@ void enterMenu(int menu){
 					menu = 3;
 					skinChoice = selectedSkin;
 					keyPressCoolDown = 30;
+				}else if(option == 2){
+					menu = 5;
+					arenaChoice = currentArena;
+					keyPressCoolDown = 30;
+				}else if(option == 3){
+					active = false;
+					startBenchmark();
 				}else{
 					menu = 1;
 					keyPressCoolDown = 30;
 				}
 			}
-			drawText(60,20,"Super Crate Box");
-			drawMenuOption(60, "PLAY",    option == 0);
-			drawMenuOption(78, "SKINS",   option == 1);
-			drawMenuOption(96, "CREDITS", option == 2);
-			drawTextCentered(125,"HIGH SCORE");
-			drawTextCentered(137,toString(highScore));
+			drawText(60,18,"Super Crate Box");
+			drawMenuOption( 48, "PLAY",      option == 0);
+			drawMenuOption( 62, "SKINS",     option == 1);
+			drawMenuOption( 76, "ARENA",     option == 2);
+			drawMenuOption( 90, "BENCHMARK", option == 3);
+			drawMenuOption(104, "CREDITS",   option == 4);
+			drawTextCentered(126, arenas[currentArena].name);
+			drawTextCentered(140,"BEST " + toString(highScore));
 			break;
 			
 			case 1://Credits
@@ -637,6 +981,91 @@ void enterMenu(int menu){
 			
 			break;
 			
+			case 4://Benchmark results
+			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
+				active = false;
+				startBenchmark();
+			}
+			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
+				menu = 0;
+				option = 2;
+				ClearObjects();
+				keyPressCoolDown = 30;
+			}
+			{
+				//Averaged first so the multiply cannot run past 32 bits
+				int avg = benchTickSum / BENCH_FRAMES;
+				int fps10 = 0;
+				if(benchCycles > 0)fps10 = (BENCH_FRAMES * 16384 * 10) / (int) benchCycles;
+				
+				drawTextCentered(14, "BENCHMARK");
+				
+				drawText(28, 36, "AVG");
+				drawText(160, 36, toString((avg * 100) / FRAME_TICKS) + "%");
+				
+				drawText(28, 50, "P95");
+				drawText(160, 50, toString((benchPercentile(95) * 100) / FRAME_TICKS) + "%");
+				
+				drawText(28, 64, "PEAK");
+				drawText(160, 64, toString((benchPeak * 100) / FRAME_TICKS) + "%");
+				
+				drawText(28, 78, "FPS");
+				drawText(160, 78, toString(fps10 / 10) + "." + toString(fps10 % 10));
+				
+				drawText(28, 92, "SLOW");
+				drawText(160, 92, toString(benchOverruns));
+				
+				drawText(28, 106, "DEATHS");
+				drawText(160, 106, toString(benchDeaths));
+				
+				drawTextCentered(126, "A = AGAIN");
+				drawTextCentered(140, "B = MENU");
+			}
+			break;
+			
+			case 5://Arena select
+			if((REG_KEYINPUT & KEY_LEFT) == 0 && navCoolDown == 0){
+				arenaChoice--;
+				if(arenaChoice < 0)arenaChoice = NUM_ARENAS-1;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_RIGHT) == 0 && navCoolDown == 0){
+				arenaChoice++;
+				if(arenaChoice >= NUM_ARENAS)arenaChoice = 0;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
+				if(arenaUnlocked(arenaChoice)){
+					currentArena = arenaChoice;
+					progressDirty = true;
+					saveProgress();
+				}
+				keyPressCoolDown = 15;
+			}
+			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
+				menu = 0;
+				option = 2;
+				keyPressCoolDown = 30;
+				break;
+			}
+			
+			drawTextCentered(18, "ARENA");
+			drawTextCentered(52, arenas[arenaChoice].name);
+			
+			if(!arenaUnlocked(arenaChoice)){
+				drawTextCentered(76, "LOCKED");
+				drawTextCentered(90, "SCORE " + toString(arenas[arenaChoice].unlockScore) + " IN");
+				drawTextCentered(102, arenas[arenaChoice-1].name);
+			}else{
+				drawTextCentered(76, "BEST " + toString(arenaBest[arenaChoice]));
+				if(arenaChoice == currentArena)drawTextCentered(94, "SELECTED");
+				else drawTextCentered(94, "A = SELECT");
+			}
+			
+			drawTextCentered(125, toString(arenaChoice+1) + " OF " + toString(NUM_ARENAS));
+			drawTextCentered(137, "B = BACK");
+			break;
+			
 			case 3://Skin select
 			if((REG_KEYINPUT & KEY_LEFT) == 0 && navCoolDown == 0){
 				skinChoice--;
@@ -671,7 +1100,7 @@ void enterMenu(int menu){
 			SetObject(0,
 			          ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(56),
 			          ATTR1_SIZE(0) | ATTR1_X(116),
-			          ATTR2_ID8(0));
+			          ATTR2_ID8(skinTileBase(skinChoice)));
 			
 			drawTextCentered(20, "SKINS");
 			drawTextCentered(80, skins[skinChoice].name);
@@ -690,7 +1119,11 @@ void enterMenu(int menu){
 		UpdateObjects();
 	}
 	
+	clearText();
+	textBase = OBJ_TEXT_GAME;
+	
 	LoadPaletteBGData(0, backgroundPal, backgroundPalLen);
+	applyArenaPalette(currentArena);
 }
 
 std::string toString(int number){
@@ -723,9 +1156,9 @@ int activeLetters = 0;
 void drawText(int x, int y, const std::string& string){
 	int startPos = activeLetters;
 	for(int i = 0; i < string.length(); i++){
-		if(startPos+i+45 >= NUM_OBJECTS)break;
+		if(startPos+i+textBase >= NUM_OBJECTS)break;
 		activeLetters++;
-		SetObject(startPos+i+45,
+		SetObject(startPos+i+textBase,
 	          ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(y),
 			  ATTR1_SIZE(0) | ATTR1_X(x+(i*8)),
 			  ATTR2_ID8(string.at(i) + 64));
@@ -738,7 +1171,7 @@ void drawTextCentered(int y, const std::string& string){
 
 void clearText(){
 	for(int i = 0; i < activeLetters; i++){
-		SetObject(i+45, ATTR0_HIDE, 0, 0);
+		SetObject(i+textBase, ATTR0_HIDE, 0, 0);
 	}
 	activeLetters = 0;
 }
@@ -754,6 +1187,7 @@ const char* weaponName(int weapon){
 		case 6:return "GRENADE LAUNCHER";
 		case 7:return "LASER GUN";
 		case 8:return "MINIGUN";
+		case 9:return "KATANA";
 	}
 	return "";
 }
@@ -767,6 +1201,245 @@ void drawMenuOption(int y, const std::string& label, bool selected){
 		drawText(x - 16, y, ">");
 		drawText(x + width + 8, y, "<");
 	}
+}
+
+//Draw the 64x64 disc straight into object VRAM. Objects are in 2D mapping, so
+//each row of the sprite sits 16 tiles further along than the last.
+void startBenchmark(){
+	//Same seed every run, and every random number after this - the monsters,
+	//the crates and the controls - comes off that one stream, so the whole run
+	//replays identically on any build
+	srand(BENCH_SEED);
+	gameInit();
+	
+	benchFrames = BENCH_FRAMES;
+	benchTickSum = 0;
+	benchPeak = 0;
+	benchLow = 0x7FFFFFF;
+	benchOverruns = 0;
+	benchShots = 0;
+	benchExplosions = 0;
+	benchPeakBullets = 0;
+	benchPeakEnemies = 0;
+	
+	for(int i = 0; i < BENCH_BINS; i++)benchHist[i] = 0;
+	benchDeaths = 0;
+	benchCycles = 0;
+	benchHeldKeys = 0x3FF;	//a set bit is a key that is not held
+	benchHoldTimer = 0;
+	
+	REG_TM2CNT = 0;
+	REG_TM3CNT = 0;
+	REG_TM2D = 0;
+	REG_TM3D = 0;
+	REG_TM2CNT = TM_ENABLE | TM_FREQ_1024;
+	REG_TM3CNT = TM_ENABLE | TM_CASCADE;
+	
+	//Stamp a placeholder over the results block. Emulators only create their
+	//battery file once a game touches SRAM, and nothing else here writes until
+	//the run is over - without this the file does not exist to be read back,
+	//and a finished run looks identical to a crashed one. The reader wants
+	//"BNC2", so a run that never finishes is still correctly rejected.
+	SRAM_BASE[64] = 'B';
+	SRAM_BASE[65] = 'N';
+	SRAM_BASE[66] = 'C';
+	SRAM_BASE[67] = '0';
+}
+
+void finishBenchmark(){
+	benchCycles = (((unsigned int) REG_TM3D) << 16) | REG_TM2D;
+	REG_TM2CNT = 0;
+	REG_TM3CNT = 0;
+	
+	writeBenchResults();
+	
+#ifdef BENCH_AUTORUN
+	//Nothing is driving this build, so keep rewriting the results: the
+	//emulator flushes its save file periodically, and this guarantees the
+	//finished figures are in it whenever that happens.
+	while(true){
+		WaitVSync();
+		writeBenchResults();
+	}
+#endif
+	
+	ClearObjects();
+	enterMenu(4);
+}
+
+//Smallest frame time that at least this percent of frames came in under
+int benchPercentile(int percent){
+	int want = ((BENCH_FRAMES * percent) + 99) / 100;
+	int seen = 0;
+	
+	for(int i = 0; i < BENCH_BINS; i++){
+		seen += benchHist[i];
+		if(seen >= want)return (i << BENCH_BIN_SHIFT) + (1 << (BENCH_BIN_SHIFT-1));
+	}
+	return benchPeak;
+}
+
+//Results land at SRAM offset 64, clear of the saved progress at the bottom,
+//so they can be read straight out of an emulator's battery file.
+void writeBenchResults(){
+	int avg = benchTickSum / BENCH_FRAMES;
+	int p95 = benchPercentile(95);
+	
+	const int at = 64;
+	SRAM_BASE[at+0] = 'B';
+	SRAM_BASE[at+1] = 'N';
+	SRAM_BASE[at+2] = 'C';
+	SRAM_BASE[at+3] = '2';
+	
+	int field[14];
+	field[0] = BENCH_FRAMES;
+	field[1] = avg;
+	field[2] = p95;
+	field[3] = benchPeak;
+	field[4] = benchLow;
+	field[5] = benchOverruns;
+	field[6] = benchDeaths;
+	field[7] = FRAME_TICKS;
+	field[8] = (int) benchCycles;
+	field[9] = benchShots;
+	field[10] = benchExplosions;
+	field[11] = benchPeakBullets;
+	field[12] = benchPeakEnemies;
+	field[13] = score;
+	
+	for(int i = 0; i < 14; i++){
+		SRAM_BASE[at + 4 + (i*4) + 0] = field[i] & 0xFF;
+		SRAM_BASE[at + 4 + (i*4) + 1] = (field[i] >> 8) & 0xFF;
+		SRAM_BASE[at + 4 + (i*4) + 2] = (field[i] >> 16) & 0xFF;
+		SRAM_BASE[at + 4 + (i*4) + 3] = (field[i] >> 24) & 0xFF;
+	}
+}
+
+int readKeys(){
+	if(benchFrames <= 0)return REG_KEYINPUT;
+	
+	//Hold a direction for a while at a time, so the run reads as play rather
+	//than a twitch and the player actually crosses the arena
+	benchHoldTimer--;
+	if(benchHoldTimer <= 0){
+		benchHoldTimer = 6 + (rand() % 20);
+		benchHeldKeys = 0x3FF;
+		
+		if(rand() % 4 != 0){
+			if(rand() % 2)benchHeldKeys &= ~KEY_LEFT;
+			else benchHeldKeys &= ~KEY_RIGHT;
+		}
+		if(rand() % 3 == 0)benchHeldKeys &= ~KEY_UP;
+	}
+	
+	//Lean on the fire button; the reload timer decides what actually comes out
+	int keys = benchHeldKeys;
+	if(rand() % 4 != 0)keys &= ~KEY_A;
+	
+	return keys;
+}
+
+void buildBlastSprite(){
+	uint8_t tile[64];
+	
+	for(int ty = 0; ty < 8; ty++){
+	for(int tx = 0; tx < 8; tx++){
+		for(int y = 0; y < 8; y++){
+		for(int x = 0; x < 8; x++){
+			//Doubled so the centre lands between pixels and the disc is even
+			int dx = (2 * ((tx*8) + x)) - 63;
+			int dy = (2 * ((ty*8) + y)) - 63;
+			
+			tile[(y*8) + x] = ((dx*dx) + (dy*dy) <= 63*63) ? BLAST_COLOUR : 0;
+		}
+		}
+		LoadTileData(4, BLAST_TILE + (ty*16) + tx, tile, 64);
+	}
+	}
+}
+
+void updateExplosion(){
+	if(explosionTimer <= 0){
+		ObjBuffer[OBJ_BLAST].attr0 = ATTR0_HIDE;
+		return;
+	}
+	
+	int age = EXPLOSION_FRAMES - explosionTimer;
+	int radius = EXPLOSION_RADIUS;
+	
+	if(age < EXPLOSION_GROW){
+		radius = (EXPLOSION_RADIUS * (age + 1)) / EXPLOSION_GROW;
+	}else if(age >= EXPLOSION_GROW + EXPLOSION_HOLD){
+		radius = (EXPLOSION_RADIUS * (EXPLOSION_FRAMES - age)) / EXPLOSION_FADE;
+	}
+	if(radius < 2)radius = 2;
+	
+	//Whatever the disc has swallowed dies. Compared squared, to keep a square
+	//root out of the frame. Nothing is killed on the way back down.
+	if(age < EXPLOSION_GROW + EXPLOSION_HOLD){
+		for(int i = 0; i < enemies.size(); i++){
+			if(enemies.at(i).isDead())continue;
+			
+			int dx = (enemies.at(i).getX() + (enemies.at(i).getWidth()/2)) - explosionX;
+			int dy = (enemies.at(i).getY() + (enemies.at(i).getHeight()/2)) - explosionY;
+			
+			if((dx*dx) + (dy*dy) <= radius * radius)enemies.at(i).setDead(true);
+		}
+	}
+	
+	//pa and pd are the inverse scale in 8.8 fixed point, so the 32 pixel
+	//source radius is magnified to the radius we want. Affine set 0 lives in
+	//the spare halfword of the first four objects.
+	int scale = (256 * 32) / radius;
+	
+	ObjBuffer[0].pad = scale;	//pa
+	ObjBuffer[1].pad = 0;		//pb
+	ObjBuffer[2].pad = 0;		//pc
+	ObjBuffer[3].pad = scale;	//pd
+	
+	//The double-size flag gives the sprite a 128 pixel box to grow into, and
+	//centres the disc within it
+	SetObject(OBJ_BLAST,
+	          ATTR0_AFF_DBL | ATTR0_8BPP | ATTR0_SQUARE | ATTR0_Y((explosionY - 64) & 0xFF),
+	          ATTR1_AFF(0) | ATTR1_SIZE(3) | ATTR1_X((explosionX - 64) & 0x1FF),
+	          ATTR2_ID8(BLAST_TILE) | ATTR2_PRIO(0));
+	
+	explosionTimer--;
+}
+
+//Paint an arena's four layers into their screenblocks. Only ever called
+//between games - it writes 4096 tiles.
+void loadArena(int index){
+	if(index < 0 || index >= NUM_ARENAS)index = 0;
+	const Arena& arena = arenas[index];
+	
+	for(int i = 0; i < girderMapLen; i++){
+		SetTile(27, i%32, i/32, arena.clouds[i]);
+		SetTile(28, i%32, i/32, arena.building[i]);
+		SetTile(29, i%32, i/32, arena.fence[i]);
+		SetTile(30, i%32, i/32, arena.girders[i]);
+	}
+}
+
+//Has to run after anything that loads backgroundPal wholesale - leaving a menu
+//does exactly that, which would otherwise put the girders back to red.
+void applyArenaPalette(int index){
+	if(index < 0 || index >= NUM_ARENAS)index = 0;
+	const Arena& arena = arenas[index];
+	
+	for(int i = 0; i < arena.paletteCount; i++){
+		SetPaletteBG(arena.palette[i].entry, arena.palette[i].colour);
+	}
+}
+
+bool arenaUnlocked(int index){
+	if(index <= 0)return true;
+	return arenaBest[index-1] >= arenas[index].unlockScore;
+}
+
+int skinTileBase(int skin){
+	if(skin <= 0)return 0;	//the first skin is the original sprite art
+	return SKIN_TILE_BASE + ((skin - 1) * PLAYER_SKIN_FRAMES);
 }
 
 void applySkin(int skin){
@@ -787,30 +1460,52 @@ std::string skinRequirement(int skin){
 }
 
 //Saved progress in SRAM:
-//  [0..3]  tag "SCB2"
-//  [4..5]  best score
+//  [0..3]  tag "SCB3"
+//  [4..5]  best score anywhere
 //  [6..9]  crates collected across every game
 //  [10]    equipped skin
+//  [11]    chosen arena
+//  [12..]  best score in each arena, two bytes each
 void loadProgress(){
 	highScore = 0;
 	lifetimeCrates = 0;
 	selectedSkin = 0;
+	currentArena = 0;
+	for(int i = 0; i < NUM_ARENAS; i++)arenaBest[i] = 0;
 	
-	if(SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C'
-	&& SRAM_BASE[2] == 'B' && SRAM_BASE[3] == '2'){
+	bool haveTag = (SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C' && SRAM_BASE[2] == 'B');
+	
+	if(haveTag && SRAM_BASE[3] == '3'){
 		highScore = SRAM_BASE[4] | (SRAM_BASE[5] << 8);
 		lifetimeCrates = SRAM_BASE[6] | (SRAM_BASE[7] << 8)
 		               | (SRAM_BASE[8] << 16) | (SRAM_BASE[9] << 24);
 		selectedSkin = SRAM_BASE[10];
+		currentArena = SRAM_BASE[11];
 		
-		if(selectedSkin < 0 || selectedSkin >= NUM_SKINS)selectedSkin = 0;
-		if(!skinUnlocked(selectedSkin))selectedSkin = 0;
+		for(int i = 0; i < NUM_ARENAS; i++){
+			arenaBest[i] = SRAM_BASE[12 + (i*2)] | (SRAM_BASE[13 + (i*2)] << 8);
+		}
+	}else if(haveTag && SRAM_BASE[3] == '2'){
+		//Before the arenas existed, so every score was set in the first one
+		highScore = SRAM_BASE[4] | (SRAM_BASE[5] << 8);
+		lifetimeCrates = SRAM_BASE[6] | (SRAM_BASE[7] << 8)
+		               | (SRAM_BASE[8] << 16) | (SRAM_BASE[9] << 24);
+		selectedSkin = SRAM_BASE[10];
+		arenaBest[0] = highScore;
+		progressDirty = true;
 	}else if(SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C'){
 		//A save from the version that only kept a high score
 		highScore = SRAM_BASE[2] | (SRAM_BASE[3] << 8);
+		arenaBest[0] = highScore;
 		progressDirty = true;
-		saveProgress();
 	}
+	
+	if(selectedSkin < 0 || selectedSkin >= NUM_SKINS)selectedSkin = 0;
+	if(!skinUnlocked(selectedSkin))selectedSkin = 0;
+	if(currentArena < 0 || currentArena >= NUM_ARENAS)currentArena = 0;
+	if(!arenaUnlocked(currentArena))currentArena = 0;
+	
+	saveProgress();
 }
 
 void saveProgress(){
@@ -819,7 +1514,7 @@ void saveProgress(){
 	SRAM_BASE[0] = 'S';
 	SRAM_BASE[1] = 'C';
 	SRAM_BASE[2] = 'B';
-	SRAM_BASE[3] = '2';
+	SRAM_BASE[3] = '3';
 	SRAM_BASE[4] = highScore & 0xFF;
 	SRAM_BASE[5] = (highScore >> 8) & 0xFF;
 	SRAM_BASE[6] = lifetimeCrates & 0xFF;
@@ -827,11 +1522,19 @@ void saveProgress(){
 	SRAM_BASE[8] = (lifetimeCrates >> 16) & 0xFF;
 	SRAM_BASE[9] = (lifetimeCrates >> 24) & 0xFF;
 	SRAM_BASE[10] = selectedSkin;
+	SRAM_BASE[11] = currentArena;
+	
+	for(int i = 0; i < NUM_ARENAS; i++){
+		SRAM_BASE[12 + (i*2)] = arenaBest[i] & 0xFF;
+		SRAM_BASE[13 + (i*2)] = (arenaBest[i] >> 8) & 0xFF;
+	}
 	
 	progressDirty = false;
 }
 
 void shoot(){
+	benchShots++;
+	
 	switch(weapon){
 	case 0://bazooka
 		spawnBullet(0);
@@ -841,7 +1544,9 @@ void shoot(){
 	break;
 	case 2://shotgun
 		for(int i = 0; i < 5; i++){
-			bullets.at(spawnBullet(1)).setLift(rand() % 3 + (-1));
+			int bullet = spawnBullet(1);
+			if(bullet < 0)break;
+			bullets.at(bullet).setLift(rand() % 3 + (-1));
 		}
 	break;
 	case 3://revolver
@@ -853,31 +1558,50 @@ void shoot(){
 	case 5://mine
 		spawnBullet(4);
 	break;
-	case 6://grenade launcher - not in game
-		bullets.at(spawnBullet(5)).setLift(1);
+	case 6://grenade launcher
+		{
+			int bullet = spawnBullet(5);
+			if(bullet >= 0)bullets.at(bullet).setLift(1);
+		}
 	break;
 	case 7://laser gun
 		spawnBullet(6);
 	break;
 	case 8://minigun
-		bullets.at(spawnBullet(1)).setLift(rand() % 3 + (-1));
+		{
+			int bullet = spawnBullet(1);
+			if(bullet >= 0)bullets.at(bullet).setLift(rand() % 3 + (-1));
+		}
+	break;
+	case 9://katana
+		spawnBullet(8);
 	break;
 	}
 }
 
 void explode(int x, int y){
-	int radius = 10;
-	int bullet = 0;
-	for(int i = 0; i < 30; i++){
-		bullet = spawnBullet(1);
-		bullets.at(bullet).setLift(rand() % 16 + (-7));
+	benchExplosions++;
+	
+	//Only starts the blast off; updateExplosion does the killing and the
+	//drawing, so the damage arrives with the disc rather than all at once
+	explosionX = x;
+	explosionY = y;
+	explosionTimer = EXPLOSION_FRAMES;
+	
+	//Debris is thrown out purely for the look of the thing - it carries no
+	//damage, and only a handful is used so the bullet pool stays available
+	for(int i = 0; i < EXPLOSION_DEBRIS; i++){
+		int bullet = spawnBullet(9);
+		if(bullet < 0)break;
+		
+		bullets.at(bullet).setLift(rand() % 7 + (-3));
 		bullets.at(bullet).setDir(rand() % 2);
 		bullets.at(bullet).move(x, y);
 	}
 }
 
 int spawnBullet(int type){
-	int i = 0;
+	int i = -1;
 	int count = 0;
 	
 	if(bullets.size() < MAX_BULLETS){
@@ -900,14 +1624,18 @@ int spawnBullet(int type){
 		}
 	}
 	
-	SetObject(i+24,
+	//Every bullet is still in flight, so there is nowhere to put a new one.
+	//Without this the caller would be handed slot 0 and turn a live bullet around.
+	if(i < 0)return -1;
+	
+	SetObject(i+OBJ_BULLET_BASE,
 			ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(bullets.at(i).getY()),
 			ATTR1_SIZE(0) | ATTR1_X(bullets.at(i).getX()),
 			ATTR2_ID8(bullets.at(i).getFrame()));
 			
 	bullets.at(i).setDir(player.getDir());
 	if(!bullets.at(i).getDir()){
-		ObjBuffer[i+24].attr1 |= ATTR1_HFLIP;
+		ObjBuffer[i+OBJ_BULLET_BASE].attr1 |= ATTR1_HFLIP;
 	}
 	
 	return i;
@@ -924,20 +1652,23 @@ void spawnMonster(){
 	
 	int i = 0;
 	
+	int spawnX = arenas[currentArena].monsterX;
+	int spawnY = arenas[currentArena].monsterY;
+	
 	if(enemies.size() < MAX_ENEMIES){
-		enemies.push_back(Monster(116,0,type));
+		enemies.push_back(Monster(spawnX,spawnY,type));
 		i = enemies.size()-1;
 	}else{
 		for(int k = 0; k < MAX_ENEMIES; k++){
 			if(enemies.at(k).isDead()){
-				enemies[k] = Monster(116,0,type);
+				enemies[k] = Monster(spawnX,spawnY,type);
 				i = k;
 				break;
 			}
 		}
 	}
 	
-	SetObject(i+3,
+	SetObject(i+OBJ_ENEMY_BASE,
 			ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(enemies.at(i).getY()),
 			ATTR1_SIZE(!type) | ATTR1_X(enemies.at(i).getX()),
 			ATTR2_ID8(startFrame));

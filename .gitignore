@@ -14,3 +14,6 @@ depend.mk
 
 # macOS
 .DS_Store
+
+# AI working notes are tracked; scratch benchmark output is not
+/tmp-bench/
