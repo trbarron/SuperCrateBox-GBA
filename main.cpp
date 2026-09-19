@@ -11,13 +11,18 @@
 void enterMenu(int menu);
 
 std::string toString(int number);
-void drawText(int x, int y, std::string string);
-void drawTextCentered(int y, std::string string);
+void drawText(int x, int y, const std::string& string);
+void drawTextCentered(int y, const std::string& string);
 void clearText();
 
 const char* weaponName(int weapon);
-void loadHighScore();
-void saveHighScore();
+void drawMenuOption(int y, const std::string& label, bool selected);
+
+void applySkin(int skin);
+bool skinUnlocked(int skin);
+std::string skinRequirement(int skin);
+void loadProgress();
+void saveProgress();
 
 void shoot();
 void explode(int x, int y);
@@ -42,6 +47,13 @@ Crate crate(0, 0, 0);
 int weapon;
 int score;
 int highScore;
+int lifetimeCrates;
+int selectedSkin;
+
+//Progress is only written to SRAM when it has actually changed, and never
+//during play: emulators react to SRAM writes by flushing the save file, which
+//stutters the frame. Nothing is lost by waiting - a run can only end in death.
+bool progressDirty;
 
 //Name of the weapon from the crate just collected, shown for a short while
 //at the place the crate was picked up from
@@ -51,9 +63,31 @@ int pickupX;
 int pickupY;
 const int PICKUP_SHOW_FRAMES = 90;
 
-//Cartridge SRAM (8-bit access only) is used to keep the high score between
-//play sessions. The first two bytes are a tag, so that blank or unavailable
-//SRAM reads back as "no high score yet" rather than as garbage.
+//A playable character. The player sprite is drawn from four palette entries
+//that nothing else uses, so a skin is just those four colours - swapping them
+//recolours every frame of the animation at once.
+struct Skin{
+	const char* name;
+	uint16_t colours[4];	//palette entries 16, 17, 19 and 20
+	int unlockScore;	//crates needed in a single game
+	int unlockCrates;	//crates needed across every game, used instead when > 0
+};
+
+const Skin skins[] = {
+	{"GUY",       {RGB(31,22,14), RGB(31,16, 5), RGB(27,11, 4), RGB(27, 8, 3)},   0,    0},
+	{"ASTRONAUT", {RGB(31,31,31), RGB(25,26,29), RGB(17,18,23), RGB(11,11,16)},  10,    0},
+	{"NINJA",     {RGB(14,15,21), RGB( 8, 9,14), RGB( 5, 5, 9), RGB( 3, 3, 6)},  20,    0},
+	{"CROCODILE", {RGB(21,28,12), RGB(13,23, 6), RGB( 7,16, 3), RGB( 4,10, 2)},  25,    0},
+	{"ROBOT",     {RGB(28,29,30), RGB(20,22,24), RGB(13,15,17), RGB( 8, 9,10)},  30,    0},
+	{"PIKLUPU",   {RGB(31,23,28), RGB(29,13,22), RGB(21, 7,15), RGB(14, 4,10)},  35,    0},
+	{"CHICKEN",   {RGB(31,30,24), RGB(31,26, 8), RGB(26,19, 3), RGB(18,12, 1)},  50,    0},
+	{"VLAMBEER",  {RGB(31,29,16), RGB(30,23, 5), RGB(23,15, 2), RGB(16,10, 1)},   0, 1000},
+};
+const int NUM_SKINS = sizeof(skins) / sizeof(skins[0]);
+
+//Cartridge SRAM (8-bit access only) is used to keep progress between play
+//sessions. The save starts with a tag, so that blank or unavailable SRAM
+//reads back as "nothing saved yet" rather than as garbage.
 #define SRAM_BASE ((volatile uint8_t *) 0x0E000000)
 
 //Emulators and flash carts work out the save type by looking for this
@@ -112,7 +146,8 @@ void init(){
 		SetTile(30, i%32, i/32, girderMap[i]);
 	};
 	
-	loadHighScore();
+	loadProgress();
+	applySkin(selectedSkin);
 }
 
 void gameInit(){
@@ -132,6 +167,7 @@ void gameInit(){
 	
 	weapon = 1;
 	score = 0;
+	applySkin(selectedSkin);
 	pickupText = "";
 	pickupTimer = 0;
 	pickupX = 0;
@@ -338,10 +374,9 @@ int main()
 			crate.setDead(true);
 			weapon = crate.getWeapon();
 			score++;
-			if(score > highScore){
-				highScore = score;
-				saveHighScore();
-			}
+			lifetimeCrates++;
+			if(score > highScore)highScore = score;
+			progressDirty = true;
 			pickupText = weaponName(weapon);
 			pickupTimer = PICKUP_SHOW_FRAMES;
 			//Remember where the crate was, before it is moved somewhere else
@@ -451,7 +486,10 @@ int main()
 		
 		player.update();
 		
-		if(player.isDead())enterMenu(2);
+		if(player.isDead()){
+			saveProgress();
+			enterMenu(2);
+		}
 	
 		//Render
 		if(!player.getDir()){
@@ -517,39 +555,50 @@ void enterMenu(int menu){
 	
 	bool active = true;
 	int option = 0;
+	int skinChoice = 0;
 	int keyPressCoolDown = 30;
+	int navCoolDown = 0;
+	const int MAIN_MENU_OPTIONS = 3;
 	if(menu == 0)ClearObjects();
 	
 	//MENU LOOP
 	while(active){
 		keyPressCoolDown--;
 		if(keyPressCoolDown <= 0)keyPressCoolDown = 0;
+		navCoolDown--;
+		if(navCoolDown <= 0)navCoolDown = 0;
 		clearText();
 		switch(menu){
 			case 0://Main menu
-			if((REG_KEYINPUT & KEY_UP) == 0){
-				option = 0;
+			if((REG_KEYINPUT & KEY_UP) == 0 && navCoolDown == 0){
+				option--;
+				if(option < 0)option = MAIN_MENU_OPTIONS-1;
+				navCoolDown = 12;
 			}
-			if((REG_KEYINPUT & KEY_DOWN) == 0){
-				option = 1;
+			if((REG_KEYINPUT & KEY_DOWN) == 0 && navCoolDown == 0){
+				option++;
+				if(option >= MAIN_MENU_OPTIONS)option = 0;
+				navCoolDown = 12;
 			}
 			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
 				if(option == 0){
 					active = false;
 					gameInit();
+				}else if(option == 1){
+					menu = 3;
+					skinChoice = selectedSkin;
+					keyPressCoolDown = 30;
 				}else{
 					menu = 1;
 					keyPressCoolDown = 30;
 				}
 			}
 			drawText(60,20,"Super Crate Box");
-			drawText(105,65,"PLAY");
-			drawText(93,90,"CREDITS");
+			drawMenuOption(60, "PLAY",    option == 0);
+			drawMenuOption(78, "SKINS",   option == 1);
+			drawMenuOption(96, "CREDITS", option == 2);
 			drawTextCentered(125,"HIGH SCORE");
 			drawTextCentered(137,toString(highScore));
-			
-			if(option == 0)drawText(90, 65, ">      <");
-			if(option == 1)drawText(78, 90, ">         <");
 			break;
 			
 			case 1://Credits
@@ -586,6 +635,53 @@ void enterMenu(int menu){
 			drawText(65, 135,"B = Main Menu");
 			
 			
+			break;
+			
+			case 3://Skin select
+			if((REG_KEYINPUT & KEY_LEFT) == 0 && navCoolDown == 0){
+				skinChoice--;
+				if(skinChoice < 0)skinChoice = NUM_SKINS-1;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_RIGHT) == 0 && navCoolDown == 0){
+				skinChoice++;
+				if(skinChoice >= NUM_SKINS)skinChoice = 0;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
+				if(skinUnlocked(skinChoice)){
+					selectedSkin = skinChoice;
+					progressDirty = true;
+					saveProgress();
+				}
+				keyPressCoolDown = 15;
+			}
+			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
+				//Put the equipped skin back before leaving the preview
+				SetObject(0, ATTR0_HIDE, 0, 0);
+				applySkin(selectedSkin);
+				menu = 0;
+				option = 1;
+				keyPressCoolDown = 30;
+				break;
+			}
+			
+			//Show the character being browsed, in its own colours
+			applySkin(skinChoice);
+			SetObject(0,
+			          ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(56),
+			          ATTR1_SIZE(0) | ATTR1_X(116),
+			          ATTR2_ID8(0));
+			
+			drawTextCentered(20, "SKINS");
+			drawTextCentered(80, skins[skinChoice].name);
+			
+			if(!skinUnlocked(skinChoice))drawTextCentered(96, skinRequirement(skinChoice));
+			else if(skinChoice == selectedSkin)drawTextCentered(96, "EQUIPPED");
+			else drawTextCentered(96, "A = EQUIP");
+			
+			drawTextCentered(125, toString(skinChoice+1) + " OF " + toString(NUM_SKINS));
+			drawTextCentered(137, "B = BACK");
 			break;
 		}
 		
@@ -624,7 +720,7 @@ std::string toString(int number){
 }
 
 int activeLetters = 0;
-void drawText(int x, int y, std::string string){
+void drawText(int x, int y, const std::string& string){
 	int startPos = activeLetters;
 	for(int i = 0; i < string.length(); i++){
 		if(startPos+i+45 >= NUM_OBJECTS)break;
@@ -636,7 +732,7 @@ void drawText(int x, int y, std::string string){
 	}
 }
 
-void drawTextCentered(int y, std::string string){
+void drawTextCentered(int y, const std::string& string){
 	drawText((SCREEN_WIDTH - ((int) string.length() * 8)) / 2, y, string);
 }
 
@@ -662,19 +758,77 @@ const char* weaponName(int weapon){
 	return "";
 }
 
-void loadHighScore(){
-	if(SRAM_BASE[0] != 'S' || SRAM_BASE[1] != 'C'){
-		highScore = 0;
-		return;
+void drawMenuOption(int y, const std::string& label, bool selected){
+	int width = (int) label.length() * 8;
+	int x = (SCREEN_WIDTH - width) / 2;
+	
+	drawText(x, y, label);
+	if(selected){
+		drawText(x - 16, y, ">");
+		drawText(x + width + 8, y, "<");
 	}
-	highScore = SRAM_BASE[2] | (SRAM_BASE[3] << 8);
 }
 
-void saveHighScore(){
+void applySkin(int skin){
+	SetPaletteObj(16, skins[skin].colours[0]);
+	SetPaletteObj(17, skins[skin].colours[1]);
+	SetPaletteObj(19, skins[skin].colours[2]);
+	SetPaletteObj(20, skins[skin].colours[3]);
+}
+
+bool skinUnlocked(int skin){
+	if(skins[skin].unlockCrates > 0)return lifetimeCrates >= skins[skin].unlockCrates;
+	return highScore >= skins[skin].unlockScore;
+}
+
+std::string skinRequirement(int skin){
+	if(skins[skin].unlockCrates > 0)return toString(skins[skin].unlockCrates) + " CRATES";
+	return "SCORE " + toString(skins[skin].unlockScore);
+}
+
+//Saved progress in SRAM:
+//  [0..3]  tag "SCB2"
+//  [4..5]  best score
+//  [6..9]  crates collected across every game
+//  [10]    equipped skin
+void loadProgress(){
+	highScore = 0;
+	lifetimeCrates = 0;
+	selectedSkin = 0;
+	
+	if(SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C'
+	&& SRAM_BASE[2] == 'B' && SRAM_BASE[3] == '2'){
+		highScore = SRAM_BASE[4] | (SRAM_BASE[5] << 8);
+		lifetimeCrates = SRAM_BASE[6] | (SRAM_BASE[7] << 8)
+		               | (SRAM_BASE[8] << 16) | (SRAM_BASE[9] << 24);
+		selectedSkin = SRAM_BASE[10];
+		
+		if(selectedSkin < 0 || selectedSkin >= NUM_SKINS)selectedSkin = 0;
+		if(!skinUnlocked(selectedSkin))selectedSkin = 0;
+	}else if(SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C'){
+		//A save from the version that only kept a high score
+		highScore = SRAM_BASE[2] | (SRAM_BASE[3] << 8);
+		progressDirty = true;
+		saveProgress();
+	}
+}
+
+void saveProgress(){
+	if(!progressDirty)return;
+	
 	SRAM_BASE[0] = 'S';
 	SRAM_BASE[1] = 'C';
-	SRAM_BASE[2] = highScore & 0xFF;
-	SRAM_BASE[3] = (highScore >> 8) & 0xFF;
+	SRAM_BASE[2] = 'B';
+	SRAM_BASE[3] = '2';
+	SRAM_BASE[4] = highScore & 0xFF;
+	SRAM_BASE[5] = (highScore >> 8) & 0xFF;
+	SRAM_BASE[6] = lifetimeCrates & 0xFF;
+	SRAM_BASE[7] = (lifetimeCrates >> 8) & 0xFF;
+	SRAM_BASE[8] = (lifetimeCrates >> 16) & 0xFF;
+	SRAM_BASE[9] = (lifetimeCrates >> 24) & 0xFF;
+	SRAM_BASE[10] = selectedSkin;
+	
+	progressDirty = false;
 }
 
 void shoot(){
