@@ -155,6 +155,7 @@ public:
 class Monster: public Entity{
 private:	
 	bool size;
+	bool angry;
 	int health;
 	
 public:
@@ -171,6 +172,7 @@ public:
 			height = 16;
 			health = 5;
 		}
+		angry = false;
 		dir = true;
 		dead = false;
 		frame = 0;
@@ -190,6 +192,19 @@ public:
 	
 	bool getSize(){
 		return size;
+	}
+	
+	bool getAngry(){
+		return angry;
+	}
+	
+	//Out of the fire and back in at the top, red, faster and at full health
+	void enrage(int x, int y){
+		this->x = x;
+		this->y = y;
+		angry = true;
+		dead = false;
+		health = size ? 2 : 5;
 	}
 	
 	void updateFrame(){
@@ -227,7 +242,7 @@ public:
 		if(type == 6)chargeTime = 60;
 		else if(type == 5)chargeTime = 90;	//grenade fuse, a second and a half
 		else if(type == 8)chargeTime = 8;	//a katana swing is brief
-		else if(type == 9)chargeTime = 8;	//blast debris fades quickly
+		else if(type == 9)chargeTime = 12;	//blast debris burns out quickly
 		else if(type == 10)chargeTime = 18;	//flames burn out after ~40px
 		else chargeTime = 15;
 		bounce = false;
@@ -243,10 +258,10 @@ public:
 			height = 6;
 		}
 		dead = false;
-		//The slash borrows the blade sprite and debris the machine gun round;
+		//The slash borrows the blade sprite and debris the flame frames;
 		//tiles 48 and up belong to the monsters
 		if(type == 8)frame = 31;
-		else if(type == 9)frame = 41;
+		else if(type == 9)frame = 290;	//FLAME_TILE
 		else if(type == 10)frame = 290;	//FLAME_TILE, drawn at start-up
 		else frame = 40+type;
 	}

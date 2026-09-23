@@ -27,6 +27,9 @@ void applyArenaPalette(int index);
 bool arenaUnlocked(int index);
 void buildBlastSprite();
 void buildFlameSprites();
+void buildAngrySprites();
+int monsterTile(Monster& monster);
+void applyShake();
 int weaponTile(int weapon);
 void updateExplosion();
 
@@ -75,7 +78,7 @@ int textBase = OBJ_TEXT_MENU;
 
 //Rockets and mines destroy everything within this many pixels of where they
 //went off, measured from the centre of each monster; a grenade's blast is a
-//little tighter. The blast is drawn as a black disc that swells to that size,
+//little tighter. The blast is drawn as a fireball that swells to that size,
 //holds, then collapses; the kill follows the picture outwards so nothing dies
 //before the disc reaches it.
 const int EXPLOSION_RADIUS = 44;
@@ -86,10 +89,27 @@ const int EXPLOSION_FADE   = 8;		//frames spent collapsing again
 const int EXPLOSION_FRAMES = EXPLOSION_GROW + EXPLOSION_HOLD + EXPLOSION_FADE;
 const int EXPLOSION_DEBRIS = 10;
 
-//The disc is a 64x64 sprite magnified by an affine transform, so a single
-//object covers every size it needs to be.
+//The fireball is a 64x64 sprite magnified by an affine transform, so a single
+//object covers every size it needs to be. It is drawn in three bands - core,
+//middle and rim - each its own palette entry, and those three entries are
+//recoloured every frame to take it from a white flash through yellow, orange
+//and red down to smoke. Only one blast is ever alive, so they can be shared.
 const int BLAST_TILE = 304;
-const int BLAST_COLOUR = 2;		//palette entry 2 is black
+const int BLAST_CORE = 40;
+const int BLAST_MID  = 41;
+const int BLAST_RIM  = 42;
+
+//Explosions shake everything but the score for a moment
+const int SHAKE_FRAMES = 14;
+int shakeTimer;
+
+//Monsters that walk into the fire come back in at the top, angry: red, twice
+//as fast, and angry for good. The red frames are copies of the green ones
+//with the three greens swapped for reds, made at start-up into free tiles.
+//Large frames are 16x16, so in the 2D sprite layout their bottom halves sit
+//one 16-tile row below the top halves, same as in the original sheet.
+const int ANGRY_LARGE_TILE = 432;	//copies of 32-39, and 48-55 below them
+const int ANGRY_SMALL_TILE = 440;	//copies of 16-21
 
 //The flamethrower isn't in the 2014 spritesheet, so its icon and three flame
 //frames are drawn at start-up into the free tiles just past the skins, in
@@ -379,7 +399,11 @@ void init(){
 	LoadTileData(4, SKIN_TILE_BASE, playerSkinTiles, playerSkinTilesLen);
 	buildBlastSprite();
 	buildFlameSprites();
+	buildAngrySprites();
 	LoadPaletteObjData(0, spritesPal, spritesPalLen);
+	SetPaletteObj(30, RGB(26, 6, 4));	//angry monsters, for greens 6, 8 and 9
+	SetPaletteObj(31, RGB(31,14, 8));
+	SetPaletteObj(32, RGB(13, 2, 3));
 	SetPaletteObj(FLAME_YELLOW, RGB(31,29,10));
 	SetPaletteObj(FLAME_ORANGE, RGB(31,16, 3));
 	SetPaletteObj(FLAME_RED,    RGB(24, 5, 2));
@@ -394,6 +418,7 @@ void init(){
 }
 
 void gameInit(){
+	shakeTimer = 0;
 	loadArena(currentArena);
 	applyArenaPalette(currentArena);
 	
@@ -527,19 +552,31 @@ int main()
 			}
 		}
 
-		//Monster Movement
+		//Monster Movement. Angry monsters take two steps a frame.
 		for(int i = 0; i < enemies.size(); i++){
 			if(!enemies.at(i).isDead()){
-				if(enemies.at(i).getDir()){
-					if(!tryMove(1,0,enemies.at(i).getWidth(),(enemies.at(i).getHeight()/2)+1,enemies.at(i))){
-						enemies.at(i).setDir(false);
-					}
-				}else{
-					if(!tryMove(-1,0,0,(enemies.at(i).getHeight()/2)+1,enemies.at(i))){
-						enemies.at(i).setDir(true);
+				int steps = enemies.at(i).getAngry() ? 2 : 1;
+				for(int n = 0; n < steps && !enemies.at(i).isDead(); n++){
+					if(enemies.at(i).getDir()){
+						if(!tryMove(1,0,enemies.at(i).getWidth(),(enemies.at(i).getHeight()/2)+1,enemies.at(i))){
+							enemies.at(i).setDir(false);
+						}
+					}else{
+						if(!tryMove(-1,0,0,(enemies.at(i).getHeight()/2)+1,enemies.at(i))){
+							enemies.at(i).setDir(true);
+						}
 					}
 				}
-				tryMove(0,2,enemies.at(i).getWidth()/2,enemies.at(i).getHeight(),enemies.at(i));
+				if(!enemies.at(i).isDead()){
+					tryMove(0,2,enemies.at(i).getWidth()/2,enemies.at(i).getHeight(),enemies.at(i));
+				}
+				
+				//Only the fire kills anything in here. Rather than dying, the
+				//monster comes back in at the top, angry.
+				if(enemies.at(i).isDead()){
+					enemies.at(i).enrage(arenas[currentArena].monsterX, arenas[currentArena].monsterY);
+					ObjBuffer[i+OBJ_ENEMY_BASE].attr2 = ATTR2_ID8(monsterTile(enemies.at(i)));
+				}
 				ObjBuffer[i+OBJ_ENEMY_BASE].attr0 &= ~(ATTR0_HIDE);
 			}else{
 				ObjBuffer[i+OBJ_ENEMY_BASE].attr0 |= ATTR0_HIDE;
@@ -610,6 +647,11 @@ int main()
 					                   bullets.at(i).getY() + bullets.at(i).getLift());
 					
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
+					
+					//Burning bits, dwindling as they fly
+					int shown = (bullets.at(i).getCharger() * FLAME_FRAMES) / 12;
+					if(shown >= FLAME_FRAMES)shown = FLAME_FRAMES - 1;
+					ObjBuffer[i+OBJ_BULLET_BASE].attr2 = ATTR2_ID8(FLAME_TILE + shown);
 				}else if(bullets.at(i).getType() == 8){
 					//Katana slash - held just in front of the player for a
 					//moment rather than travelling anywhere. The blade is
@@ -769,7 +811,7 @@ int main()
 			}
 			ObjBuffer[2].attr2 = ATTR2_ID8(skinTileBase(selectedSkin) + player.getFrame());
 			for(int i = 0; i < enemies.size(); i++){
-				ObjBuffer[i+OBJ_ENEMY_BASE].attr2 = ATTR2_ID8(enemies.at(i).getFrame());
+				ObjBuffer[i+OBJ_ENEMY_BASE].attr2 = ATTR2_ID8(monsterTile(enemies.at(i)));
 			}
 			
 		}
@@ -901,6 +943,8 @@ int main()
 				}
 			}
 		}
+		
+		applyShake();
 
 		drawText(112,10,toString(score));
 		
@@ -986,6 +1030,12 @@ int main()
 }
 
 void enterMenu(int menu){
+	//A death mid-shake would otherwise leave the menus knocked askew
+	shakeTimer = 0;
+	REG_BG0HOFS = 0; REG_BG0VOFS = 0;
+	REG_BG1HOFS = 0; REG_BG1VOFS = 0;
+	REG_BG2HOFS = 0; REG_BG2VOFS = 0;
+	REG_BG3VOFS = 0;
 	LoadPaletteBGData(0, menuBGPal, menuBGPalLen);
 	clearText();
 	
@@ -1453,6 +1503,15 @@ int readKeys(){
 	return keys;
 }
 
+//A billowing fireball rather than a plain disc: a main ball with six lumps
+//around it, in doubled coordinates so the centre falls between pixels. Each
+//is x, y, radius; nothing reaches past 63, the edge of the 64x64 box.
+const signed char BLAST_LUMPS[7][3] = {
+	{  0,   0, 50},
+	{ 36,   2, 26}, { 16,  30, 22}, {-18,  28, 27},
+	{-33,  -2, 23}, {-16, -32, 25}, { 19, -28, 21},
+};
+
 void buildBlastSprite(){
 	uint8_t tile[64];
 	
@@ -1460,15 +1519,125 @@ void buildBlastSprite(){
 	for(int tx = 0; tx < 8; tx++){
 		for(int y = 0; y < 8; y++){
 		for(int x = 0; x < 8; x++){
-			//Doubled so the centre lands between pixels and the disc is even
-			int dx = (2 * ((tx*8) + x)) - 63;
-			int dy = (2 * ((ty*8) + y)) - 63;
+			int px = (tx*8) + x;
+			int py = (ty*8) + y;
+			int dx = (2 * px) - 63;
+			int dy = (2 * py) - 63;
 			
-			tile[(y*8) + x] = ((dx*dx) + (dy*dy) <= 63*63) ? BLAST_COLOUR : 0;
+			bool inside = false;
+			for(int l = 0; l < 7; l++){
+				int lx = dx - BLAST_LUMPS[l][0];
+				int ly = dy - BLAST_LUMPS[l][1];
+				int lr = BLAST_LUMPS[l][2];
+				if((lx*lx) + (ly*ly) <= lr*lr){
+					inside = true;
+					break;
+				}
+			}
+			
+			uint8_t colour = 0;
+			if(inside){
+				//Bands by distance from the centre, with their edges
+				//roughened by a cheap hash so they don't read as rings
+				int jitter = (((px * 5) + (py * 3)) ^ (px * py)) & 7;
+				int d2 = (dx*dx) + (dy*dy);
+				int core = 22 + jitter;
+				int mid  = 38 + jitter;
+				
+				if(d2 < core*core)colour = BLAST_CORE;
+				else if(d2 < mid*mid)colour = BLAST_MID;
+				else colour = BLAST_RIM;
+			}
+			tile[(y*8) + x] = colour;
 		}
 		}
 		LoadTileData(4, BLAST_TILE + (ty*16) + tx, tile, 64);
 	}
+	}
+}
+
+//The fireball's colours over its life, as core, middle, rim, from the white
+//flash to the last of the smoke. Each row is held for BLAST_STAGE_FRAMES.
+const int BLAST_STAGES = 6;
+const int BLAST_STAGE_FRAMES = 6;
+const unsigned short BLAST_COLOURS[BLAST_STAGES][3] = {
+	{RGB(31,31,31), RGB(31,31,20), RGB(31,24, 6)},
+	{RGB(31,31,18), RGB(31,22, 4), RGB(29,10, 3)},
+	{RGB(31,25, 6), RGB(31,14, 3), RGB(23, 5, 3)},
+	{RGB(31,16, 4), RGB(24, 7, 3), RGB(14, 5, 4)},
+	{RGB(22, 8, 4), RGB(13, 7, 6), RGB( 9, 7, 7)},
+	{RGB(12, 9, 8), RGB( 9, 8, 8), RGB( 6, 6, 6)},
+};
+
+void buildAngrySprites(){
+	const uint8_t* sheet = (const uint8_t*) spritesTiles;
+	uint8_t tile[64];
+	
+	//Eight tiles of large-monster tops, their eight bottoms, then the six
+	//small-monster frames
+	for(int n = 0; n < 22; n++){
+		int from, to;
+		if(n < 8){
+			from = 32 + n;
+			to = ANGRY_LARGE_TILE + n;
+		}else if(n < 16){
+			from = 48 + (n - 8);
+			to = ANGRY_LARGE_TILE + 16 + (n - 8);
+		}else{
+			from = 16 + (n - 16);
+			to = ANGRY_SMALL_TILE + (n - 16);
+		}
+		
+		for(int p = 0; p < 64; p++){
+			uint8_t colour = sheet[(from * 64) + p];
+			if(colour == 6)colour = 30;
+			else if(colour == 8)colour = 31;
+			else if(colour == 9)colour = 32;
+			tile[p] = colour;
+		}
+		LoadTileData(4, to, tile, 64);
+	}
+}
+
+int monsterTile(Monster& monster){
+	int frame = monster.getFrame();
+	if(!monster.getAngry())return frame;
+	
+	//A monster that has not animated yet is still on frame 0
+	if(monster.getSize()){
+		if(frame < 16)frame = 16;
+		return ANGRY_SMALL_TILE + (frame - 16);
+	}
+	if(frame < 32)frame = 32;
+	return ANGRY_LARGE_TILE + (frame - 32);
+}
+
+//Knock every background and every game object by a few pixels, fading out
+//over the shake. Runs after all the objects have been placed for the frame,
+//since everything visible has its position written fresh each frame.
+void applyShake(){
+	int sx = 0;
+	int sy = 0;
+	
+	if(shakeTimer > 0){
+		int size = (shakeTimer + 4) / 5;
+		sx = (rand() % ((size * 2) + 1)) - size;
+		sy = (rand() % ((size * 2) + 1)) - size;
+		shakeTimer--;
+	}
+	
+	//Backgrounds scroll the opposite way to the picture moving
+	REG_BG0HOFS = -sx; REG_BG0VOFS = -sy;
+	REG_BG1HOFS = -sx; REG_BG1VOFS = -sy;
+	REG_BG2HOFS = -sx; REG_BG2VOFS = -sy;
+	REG_BG3HOFS = cloudScroll - sx; REG_BG3VOFS = -sy;
+	
+	if(sx == 0 && sy == 0)return;
+	
+	for(int o = 0; o <= OBJ_BLAST; o++){
+		if((ObjBuffer[o].attr0 & 0x300) == ATTR0_HIDE)continue;
+		SetObjectX(o, (ObjBuffer[o].attr1 & ATTR1_X_MASK) + sx);
+		SetObjectY(o, (ObjBuffer[o].attr0 & ATTR0_Y_MASK) + sy);
 	}
 }
 
@@ -1562,6 +1731,12 @@ void updateExplosion(){
 		radius = (explosionRadius * (EXPLOSION_FRAMES - age)) / EXPLOSION_FADE;
 	}
 	if(radius < 2)radius = 2;
+	
+	int stage = age / BLAST_STAGE_FRAMES;
+	if(stage >= BLAST_STAGES)stage = BLAST_STAGES - 1;
+	SetPaletteObj(BLAST_CORE, BLAST_COLOURS[stage][0]);
+	SetPaletteObj(BLAST_MID,  BLAST_COLOURS[stage][1]);
+	SetPaletteObj(BLAST_RIM,  BLAST_COLOURS[stage][2]);
 	
 	//Whatever the disc has swallowed dies. Compared squared, to keep a square
 	//root out of the frame. Nothing is killed on the way back down.
@@ -1862,6 +2037,7 @@ void explode(int x, int y, int radius){
 	explosionX = x;
 	explosionY = y;
 	explosionRadius = radius;
+	shakeTimer = SHAKE_FRAMES;
 	explosionTimer = EXPLOSION_FRAMES;
 	
 	//Debris is thrown out purely for the look of the thing - it carries no
