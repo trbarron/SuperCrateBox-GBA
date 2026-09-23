@@ -39,7 +39,8 @@ void loadProgress();
 void saveProgress();
 
 void shoot();
-void explode(int x, int y);
+void explode(int x, int y, int radius);
+void updateGrenade(Bullet& grenade);
 int spawnBullet(int type);
 void spawnMonster();
 bool tryMove(int x, int y, int testX, int testY, Entity& entity);
@@ -70,11 +71,13 @@ const int OBJ_TEXT_MENU = OBJ_ENEMY_BASE;
 
 int textBase = OBJ_TEXT_MENU;
 
-//Rockets, mines and grenades destroy everything within this many pixels of
-//where they went off, measured from the centre of each monster. The blast is
-//drawn as a black disc that swells to that size, holds, then collapses; the
-//kill follows the picture outwards so nothing dies before the disc reaches it.
+//Rockets and mines destroy everything within this many pixels of where they
+//went off, measured from the centre of each monster; a grenade's blast is a
+//little tighter. The blast is drawn as a black disc that swells to that size,
+//holds, then collapses; the kill follows the picture outwards so nothing dies
+//before the disc reaches it.
 const int EXPLOSION_RADIUS = 44;
+const int GRENADE_RADIUS   = 32;
 const int EXPLOSION_GROW   = 8;		//frames spent swelling
 const int EXPLOSION_HOLD   = 20;	//about a third of a second at full size
 const int EXPLOSION_FADE   = 8;		//frames spent collapsing again
@@ -87,6 +90,7 @@ const int BLAST_TILE = 304;
 const int BLAST_COLOUR = 2;		//palette entry 2 is black
 
 int explosionTimer;
+int explosionRadius;
 int explosionX;
 int explosionY;
 
@@ -149,25 +153,34 @@ const PaletteTweak siloPalette[] = {
 	{ 3, RGB( 7, 8,10)}, { 4, RGB( 6, 7, 9)},
 };
 
+//Crate spots, as x,y pairs. Every one is standing on something solid and clear
+//of the fire; there are plenty so the next crate is rarely somewhere you have
+//just been.
 const unsigned char yardCrates[] = {
-	 80, 32,   150, 32,
-	 30, 64,   200, 64,
-	115,104,
+	 80, 32,   112, 32,   150, 32,
+	 16, 64,    48, 64,   176, 64,   216, 64,
+	 80,104,   115,104,   150,104,
+	 16,136,    48,136,   184,136,   216,136,
 	 80,144,   150,144,
 };
 const unsigned char yardFire[] = { 14,19,  15,19 };
 
 const unsigned char siloCrates[] = {
-	 40, 24,   192, 24,
-	 80, 56,   152, 56,
-	 40, 88,   192, 88,
-	112,120,
+	 16, 24,    40, 24,   192, 24,   216, 24,
+	 80, 56,   112, 56,   152, 56,
+	 16, 88,    40, 88,   192, 88,   216, 88,
+	 72,120,   112,120,   152,120,
+	 24,136,   208,136,
+	 64,144,   160,144,
 };
 
 const unsigned char templeCrates[] = {
-	 40, 32,   192, 32,
+	 40, 32,    80, 32,   152, 32,   192, 32,
 	 24, 64,   112, 64,   208, 64,
-	 40, 96,   192, 96,
+	 40, 96,    80, 96,   152, 96,   192, 96,
+	 96,128,   128,128,
+	 16,136,   208,136,
+	 72,144,   160,144,
 };
 
 const Arena arenas[] = {
@@ -181,7 +194,7 @@ const Arena arenas[] = {
 	
 	{"ROCKET SILO",
 	 siloGirderMap, blankMap, blankMap, cloudBGMap,
-	 116, 60,  116, 0,
+	 116, 56,  116, 0,
 	 siloCrates, sizeof(siloCrates)/2,
 	 yardFire, sizeof(yardFire)/2,
 	 siloPalette, sizeof(siloPalette)/sizeof(siloPalette[0]),
@@ -197,6 +210,9 @@ const Arena arenas[] = {
 };
 const int NUM_ARENAS = sizeof(arenas) / sizeof(arenas[0]);
 
+//How far from the player a new crate has to appear
+const int CRATE_CLEARANCE = 56;
+
 int currentArena;
 int arenaBest[NUM_ARENAS];	//best score in each, which is what unlocks the next
 
@@ -205,6 +221,7 @@ const int NUM_WEAPONS = 10;
 int score;
 int highScore;
 int lifetimeCrates;
+int lifetimeDeaths;
 int selectedSkin;
 
 //Progress is only written to SRAM when it has actually changed, and never
@@ -536,6 +553,8 @@ int main()
 							if(spawnBullet(7) < 0)break;
 						}
 					}
+				}else if(bullets.at(i).getType() == 5){
+					updateGrenade(bullets.at(i));
 				}else if(bullets.at(i).getType() == 7){
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
 				}else if(bullets.at(i).getType() == 9){
@@ -550,9 +569,16 @@ int main()
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
 				}else if(bullets.at(i).getType() == 8){
 					//Katana slash - held just in front of the player for a
-					//moment rather than travelling anywhere
-					if(player.getDir())bullets.at(i).move(player.getX()+6, player.getY());
-					else bullets.at(i).move(player.getX()-6, player.getY());
+					//moment rather than travelling anywhere. The blade is
+					//drawn at the far end of the reach, and flips over half
+					//way through so the swing reads as a cut.
+					if(player.getDir())bullets.at(i).move(player.getX()+4, player.getY()-4);
+					else bullets.at(i).move(player.getX()-12, player.getY()-4);
+					
+					if(bullets.at(i).getCharger() >= 4)ObjBuffer[i+OBJ_BULLET_BASE].attr1 |= ATTR1_VFLIP;
+					else ObjBuffer[i+OBJ_BULLET_BASE].attr1 &= ~(ATTR1_VFLIP);
+					if(player.getDir())ObjBuffer[i+OBJ_BULLET_BASE].attr1 &= ~(ATTR1_HFLIP);
+					else ObjBuffer[i+OBJ_BULLET_BASE].attr1 |= ATTR1_HFLIP;
 					
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
 				}else{
@@ -563,10 +589,8 @@ int main()
 								bullets.at(i).setDir(false);
 							}else{
 								bullets.at(i).setDead(true);
-								if(bullets.at(i).getType() == 0
-								|| bullets.at(i).getType() == 4
-								|| bullets.at(i).getType() == 5){
-									explode(bullets.at(i).getX(), bullets.at(i).getY());
+								if(bullets.at(i).getType() == 0){
+									explode(bullets.at(i).getX(), bullets.at(i).getY(), EXPLOSION_RADIUS);
 								}
 							}
 						}
@@ -577,10 +601,8 @@ int main()
 								bullets.at(i).setDir(true);
 							}else{
 								bullets.at(i).setDead(true);
-								if(bullets.at(i).getType() == 0
-								|| bullets.at(i).getType() == 4
-								|| bullets.at(i).getType() == 5){
-									explode(bullets.at(i).getX(), bullets.at(i).getY());
+								if(bullets.at(i).getType() == 0){
+									explode(bullets.at(i).getX(), bullets.at(i).getY(), EXPLOSION_RADIUS);
 								}
 							}
 						}
@@ -592,39 +614,46 @@ int main()
 			}
 		}
 		
+		//Weapons are settled before the player is, so a monster cut down or
+		//blown up this frame can't still take the player with it
 		for(int i = 0; i < enemies.size(); i++){
 			if(!enemies.at(i).isDead()){
-				if(checkEntityCollision(player, enemies.at(i))){
-					player.setDead(true);
-				}
-				
 				for(int k = 0; k < bullets.size(); k++){
-					if(!bullets.at(k).isDead()){
+					if(!bullets.at(k).isDead() && bullets.at(k).getType() != 9){
 						if(checkEntityCollision(bullets.at(k), enemies.at(i))){
+							//A katana swing lands once on each monster it
+							//reaches, however long it stays in contact, and
+							//spins a large monster about
+							if(bullets.at(k).getType() == 8){
+								if(!bullets.at(k).strike(i))continue;
+								enemies.at(i).hurt(bullets.at(k).getDamage());
+								if(!enemies.at(i).getSize()){
+									enemies.at(i).setDir(!enemies.at(i).getDir());
+								}
+								break;
+							}
+							
 							enemies.at(i).hurt(bullets.at(k).getDamage());
 							
-							//A katana blow spins a large monster about. Only on
-							//the opening frame of the swing, or the slash would
-							//flip it once per frame it stays in contact.
-							if(bullets.at(k).getType() == 8
-							&& bullets.at(k).getCharger() == 1
-							&& !enemies.at(i).getSize()){
-								enemies.at(i).setDir(!enemies.at(i).getDir());
-							}
 							if(bullets.at(k).getType() != 3
 							&& bullets.at(k).getType() != 6
 							&& bullets.at(k).getType() != 7
 							&& bullets.at(k).getType() != 8){
 								bullets.at(k).setDead(true);
 								if(bullets.at(k).getType() == 0
-								|| bullets.at(k).getType() == 4
-								|| bullets.at(k).getType() == 5){
-									explode(bullets.at(k).getX(), bullets.at(k).getY());
+								|| bullets.at(k).getType() == 4){
+									explode(bullets.at(k).getX(), bullets.at(k).getY(), EXPLOSION_RADIUS);
+								}else if(bullets.at(k).getType() == 5){
+									explode(bullets.at(k).getX()+2, bullets.at(k).getY()+2, GRENADE_RADIUS);
 								}
 							}
 							break;
 						}
 					}
+				}
+				
+				if(!enemies.at(i).isDead() && checkEntityCollision(player, enemies.at(i))){
+					player.setDead(true);
 				}
 			}
 		}
@@ -645,8 +674,23 @@ int main()
 		}
 		
 		if(crate.isDead()){
+			//Never where it just was, and never on top of or right next to
+			//the player, or crates get picked up two and three at a time.
+			//A few tries is plenty with this many spots; if they all miss,
+			//the last one is used anyway.
 			const Arena& arena = arenas[currentArena];
-			int spot = rand() % arena.crateCount;
+			int spot = 0;
+			for(int tries = 0; tries < 8; tries++){
+				spot = rand() % arena.crateCount;
+				int sx = arena.crateSpots[spot*2];
+				int sy = arena.crateSpots[(spot*2)+1];
+				int dx = sx - player.getX();
+				int dy = sy - player.getY();
+				
+				if(sx == crate.getX() && sy == crate.getY())continue;
+				if((dx*dx) + (dy*dy) < CRATE_CLEARANCE * CRATE_CLEARANCE)continue;
+				break;
+			}
 			crate.move(arena.crateSpots[spot*2], arena.crateSpots[(spot*2)+1]);
 			int newWep = 0;
 			do newWep = rand() % NUM_WEAPONS;
@@ -693,7 +737,7 @@ int main()
 				shootCoolDown = true;
 			}
 		}else if(weapon ==  1){
-			if(reloadTimer >= 10){
+			if(reloadTimer >= 6){
 				shootCoolDown = true;
 			}
 		}else{
@@ -755,6 +799,8 @@ int main()
 				(&player)->~Player();
 				new (&player) Player(arenas[currentArena].playerX, arenas[currentArena].playerY);
 			}else{
+				lifetimeDeaths++;
+				progressDirty = true;
 				saveProgress();
 				enterMenu(2);
 			}
@@ -787,8 +833,15 @@ int main()
 		
 		for(int i = 0; i < bullets.size(); i++){
 			if(!bullets.at(i).isDead()){
-				SetObjectX(i+OBJ_BULLET_BASE, bullets.at(i).getX());
-				SetObjectY(i+OBJ_BULLET_BASE, bullets.at(i).getY());
+				if(bullets.at(i).getType() == 8){
+					//The slash hitbox is 16x12; draw its blade at the outer end
+					int reach = player.getDir() ? 8 : 0;
+					SetObjectX(i+OBJ_BULLET_BASE, bullets.at(i).getX() + reach);
+					SetObjectY(i+OBJ_BULLET_BASE, bullets.at(i).getY() + 2);
+				}else{
+					SetObjectX(i+OBJ_BULLET_BASE, bullets.at(i).getX());
+					SetObjectY(i+OBJ_BULLET_BASE, bullets.at(i).getY());
+				}
 			}
 		}
 
@@ -958,6 +1011,7 @@ void enterMenu(int menu){
 			drawText(30, 20, "GBA - Super Crate Box");
 			drawText(30,60, "Created by Peter Black");
 			drawText(70,80, "for CGA 2014");
+			drawTextCentered(104, "Updated by Tyler Barron");
 			drawText(8, 135, "Assets & Gameplay C Vlambeer");
 			break;
 			
@@ -975,6 +1029,8 @@ void enterMenu(int menu){
 			drawText(82,60,"GAME OVER");
 			drawText(85,80,"Score:");
 			drawText(133,80,toString(score));
+			drawText(85,95,"Deaths:");
+			drawText(141,95,toString(lifetimeDeaths));
 			drawText(77, 125,"A = Retry");
 			drawText(65, 135,"B = Main Menu");
 			
@@ -1365,12 +1421,12 @@ void updateExplosion(){
 	}
 	
 	int age = EXPLOSION_FRAMES - explosionTimer;
-	int radius = EXPLOSION_RADIUS;
+	int radius = explosionRadius;
 	
 	if(age < EXPLOSION_GROW){
-		radius = (EXPLOSION_RADIUS * (age + 1)) / EXPLOSION_GROW;
+		radius = (explosionRadius * (age + 1)) / EXPLOSION_GROW;
 	}else if(age >= EXPLOSION_GROW + EXPLOSION_HOLD){
-		radius = (EXPLOSION_RADIUS * (EXPLOSION_FRAMES - age)) / EXPLOSION_FADE;
+		radius = (explosionRadius * (EXPLOSION_FRAMES - age)) / EXPLOSION_FADE;
 	}
 	if(radius < 2)radius = 2;
 	
@@ -1460,22 +1516,26 @@ std::string skinRequirement(int skin){
 }
 
 //Saved progress in SRAM:
-//  [0..3]  tag "SCB3"
+//  [0..3]  tag "SCB4"
 //  [4..5]  best score anywhere
 //  [6..9]  crates collected across every game
 //  [10]    equipped skin
 //  [11]    chosen arena
 //  [12..]  best score in each arena, two bytes each
+//  then    deaths across every game, four bytes
+const int SRAM_DEATHS = 12 + (NUM_ARENAS * 2);
+
 void loadProgress(){
 	highScore = 0;
 	lifetimeCrates = 0;
+	lifetimeDeaths = 0;
 	selectedSkin = 0;
 	currentArena = 0;
 	for(int i = 0; i < NUM_ARENAS; i++)arenaBest[i] = 0;
 	
 	bool haveTag = (SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C' && SRAM_BASE[2] == 'B');
 	
-	if(haveTag && SRAM_BASE[3] == '3'){
+	if(haveTag && (SRAM_BASE[3] == '4' || SRAM_BASE[3] == '3')){
 		highScore = SRAM_BASE[4] | (SRAM_BASE[5] << 8);
 		lifetimeCrates = SRAM_BASE[6] | (SRAM_BASE[7] << 8)
 		               | (SRAM_BASE[8] << 16) | (SRAM_BASE[9] << 24);
@@ -1484,6 +1544,14 @@ void loadProgress(){
 		
 		for(int i = 0; i < NUM_ARENAS; i++){
 			arenaBest[i] = SRAM_BASE[12 + (i*2)] | (SRAM_BASE[13 + (i*2)] << 8);
+		}
+		
+		//Deaths only started being counted in version 4
+		if(SRAM_BASE[3] == '4'){
+			lifetimeDeaths = SRAM_BASE[SRAM_DEATHS] | (SRAM_BASE[SRAM_DEATHS+1] << 8)
+			               | (SRAM_BASE[SRAM_DEATHS+2] << 16) | (SRAM_BASE[SRAM_DEATHS+3] << 24);
+		}else{
+			progressDirty = true;
 		}
 	}else if(haveTag && SRAM_BASE[3] == '2'){
 		//Before the arenas existed, so every score was set in the first one
@@ -1514,7 +1582,7 @@ void saveProgress(){
 	SRAM_BASE[0] = 'S';
 	SRAM_BASE[1] = 'C';
 	SRAM_BASE[2] = 'B';
-	SRAM_BASE[3] = '3';
+	SRAM_BASE[3] = '4';
 	SRAM_BASE[4] = highScore & 0xFF;
 	SRAM_BASE[5] = (highScore >> 8) & 0xFF;
 	SRAM_BASE[6] = lifetimeCrates & 0xFF;
@@ -1528,6 +1596,11 @@ void saveProgress(){
 		SRAM_BASE[12 + (i*2)] = arenaBest[i] & 0xFF;
 		SRAM_BASE[13 + (i*2)] = (arenaBest[i] >> 8) & 0xFF;
 	}
+	
+	SRAM_BASE[SRAM_DEATHS]   = lifetimeDeaths & 0xFF;
+	SRAM_BASE[SRAM_DEATHS+1] = (lifetimeDeaths >> 8) & 0xFF;
+	SRAM_BASE[SRAM_DEATHS+2] = (lifetimeDeaths >> 16) & 0xFF;
+	SRAM_BASE[SRAM_DEATHS+3] = (lifetimeDeaths >> 24) & 0xFF;
 	
 	progressDirty = false;
 }
@@ -1543,7 +1616,7 @@ void shoot(){
 		spawnBullet(1);
 	break;
 	case 2://shotgun
-		for(int i = 0; i < 5; i++){
+		for(int i = 0; i < 8; i++){
 			int bullet = spawnBullet(1);
 			if(bullet < 0)break;
 			bullets.at(bullet).setLift(rand() % 3 + (-1));
@@ -1560,8 +1633,9 @@ void shoot(){
 	break;
 	case 6://grenade launcher
 		{
+			//Lobbed up and forwards; updateGrenade takes it from there
 			int bullet = spawnBullet(5);
-			if(bullet >= 0)bullets.at(bullet).setLift(1);
+			if(bullet >= 0)bullets.at(bullet).setLift(-2);
 		}
 	break;
 	case 7://laser gun
@@ -1579,13 +1653,71 @@ void shoot(){
 	}
 }
 
-void explode(int x, int y){
+//A grenade arcs under gravity and bounces off anything solid - the fire
+//included - losing a little each time, until its fuse runs out. Scenery never
+//sets it off; only the fuse or a monster does. Lift is its vertical speed.
+void updateGrenade(Bullet& grenade){
+	if(grenade.charge()){
+		grenade.setDead(true);
+		explode(grenade.getX()+2, grenade.getY()+2, GRENADE_RADIUS);
+		return;
+	}
+	
+	int w = grenade.getWidth();
+	int h = grenade.getHeight();
+	
+	//Sideways. checkMapCollision reports fire as 2; a grenade treats that
+	//as solid, where tryMove would quietly let the fire eat it.
+	if(grenade.getSpeed() > 0){
+		int step = grenade.getDir() ? grenade.getSpeed() : -grenade.getSpeed();
+		int edge = grenade.getDir() ? w : 0;
+		
+		if(checkMapCollision(grenade.getX()+step, grenade.getY(), edge, (h/2)+1) == 1){
+			grenade.move(grenade.getX()+step, grenade.getY());
+		}else{
+			grenade.setDir(!grenade.getDir());
+		}
+	}
+	
+	//Gravity, a pixel a frame faster every fourth frame
+	int vy = grenade.getLift();
+	if((grenade.getCharger() % 4) == 0 && vy < 3)vy++;
+	
+	//Up and down a pixel at a time, so a fast drop can't skip a girder
+	int dirY = (vy > 0) ? 1 : -1;
+	for(int n = 0; n < vy * dirY; n++){
+		int edge = (dirY > 0) ? h : 0;
+		if(checkMapCollision(grenade.getX(), grenade.getY()+dirY, w/2, edge) == 1){
+			grenade.move(grenade.getX(), grenade.getY()+dirY);
+		}else if(dirY > 0){
+			//Bounce back up at a bit over half the speed, and scrub off
+			//sideways speed until it settles and sits there
+			vy = (vy > 1) ? -(vy - 1) : 0;
+			if(grenade.getSpeed() > 1 || (grenade.getSpeed() > 0 && vy == 0)){
+				grenade.setSpeed(grenade.getSpeed() - 1);
+			}
+			break;
+		}else{
+			vy = 0;
+			break;
+		}
+	}
+	grenade.setLift(vy);
+	
+	//Out through a gap in the arena - gone, without a bang nobody would see
+	if(grenade.getY() > SCREEN_HEIGHT || grenade.getX() < -8 || grenade.getX() > SCREEN_WIDTH){
+		grenade.setDead(true);
+	}
+}
+
+void explode(int x, int y, int radius){
 	benchExplosions++;
 	
 	//Only starts the blast off; updateExplosion does the killing and the
 	//drawing, so the damage arrives with the disc rather than all at once
 	explosionX = x;
 	explosionY = y;
+	explosionRadius = radius;
 	explosionTimer = EXPLOSION_FRAMES;
 	
 	//Debris is thrown out purely for the look of the thing - it carries no
@@ -1629,8 +1761,8 @@ int spawnBullet(int type){
 	if(i < 0)return -1;
 	
 	SetObject(i+OBJ_BULLET_BASE,
-			ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(bullets.at(i).getY()),
-			ATTR1_SIZE(0) | ATTR1_X(bullets.at(i).getX()),
+			ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(bullets.at(i).getY() & 0xFF),
+			ATTR1_SIZE(0) | ATTR1_X(bullets.at(i).getX() & 0x1FF),
 			ATTR2_ID8(bullets.at(i).getFrame()));
 			
 	bullets.at(i).setDir(player.getDir());
