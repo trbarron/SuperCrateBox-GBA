@@ -520,14 +520,14 @@ static inline void SetObject(int object, uint16_t attr0, uint16_t attr1, uint16_
 static inline void SetObjectX(int object, int x)
 {
 	ObjAttr& obj(ObjBuffer[object]);
-	obj.attr1 = (obj.attr1 & ~ATTR1_X_MASK) | ATTR1_X(x);
+	obj.attr1 = (obj.attr1 & ~ATTR1_X_MASK) | ATTR1_X(x & 0x1FF);
 }
 
 // Set an object's Y position.
 static inline void SetObjectY(int object, int y)
 {
 	ObjAttr& obj(ObjBuffer[object]);
-	obj.attr0 = (obj.attr0 & ~ATTR0_Y_MASK) | ATTR0_Y(y);
+	obj.attr0 = (obj.attr0 & ~ATTR0_Y_MASK) | ATTR0_Y(y & 0xFF);
 }
 
 #endif
