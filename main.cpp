@@ -276,7 +276,7 @@ const int FRAME_TICKS = 4389;
 const int TM_FREQ_64 = 1;
 const int TM_ENABLE = 0x80;
 
-bool showMeter = true;
+bool showMeter = false;	//SELECT turns it on during play
 int frameTicks;
 int peakTicks;
 int overruns;

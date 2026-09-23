@@ -14,6 +14,6 @@ I recommend Visual Boy Advance which can be found at http://www.emulator-zone.co
 
 The default controls on the emulator map the DPAD to the Arrow Keys, A Button to Z and B Button to X.
 
-In game, START pauses (START again to resume, SELECT to quit to the menu) and SELECT toggles the frame meter. Skins, arena choice, lifetime stats, the benchmark and the credits are under EXTRAS on the main menu.
+In game, START pauses (START again to resume, SELECT to quit to the menu) and SELECT toggles the frame meter (off by default). Skins, arena choice, lifetime stats, the benchmark and the credits are under EXTRAS on the main menu.
 
 ~Peter Black 2014
