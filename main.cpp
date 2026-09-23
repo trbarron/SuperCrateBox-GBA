@@ -26,6 +26,8 @@ void loadArena(int index);
 void applyArenaPalette(int index);
 bool arenaUnlocked(int index);
 void buildBlastSprite();
+void buildFlameSprites();
+int weaponTile(int weapon);
 void updateExplosion();
 
 void startBenchmark();
@@ -88,6 +90,19 @@ const int EXPLOSION_DEBRIS = 10;
 //object covers every size it needs to be.
 const int BLAST_TILE = 304;
 const int BLAST_COLOUR = 2;		//palette entry 2 is black
+
+//The flamethrower isn't in the 2014 spritesheet, so its icon and three flame
+//frames are drawn at start-up into the free tiles just past the skins, in
+//sprite palette entries nothing else uses (the sheet stops at 20).
+const int FLAME_TILE      = 290;	//three frames, big to small
+const int FLAME_ICON_TILE = 293;
+const int FLAME_FRAMES    = 3;
+const int FLAME_YELLOW = 24;
+const int FLAME_ORANGE = 25;
+const int FLAME_RED    = 26;
+const int GUN_DARK     = 27;
+const int GUN_LIGHT    = 28;
+const int FLAME_SMOKE  = 29;
 
 int explosionTimer;
 int explosionRadius;
@@ -217,7 +232,7 @@ int currentArena;
 int arenaBest[NUM_ARENAS];	//best score in each, which is what unlocks the next
 
 int weapon;
-const int NUM_WEAPONS = 10;
+const int NUM_WEAPONS = 11;
 int score;
 int highScore;
 int lifetimeCrates;
@@ -363,7 +378,14 @@ void init(){
 	LoadTileData(4, 64, font_bold, 8192);
 	LoadTileData(4, SKIN_TILE_BASE, playerSkinTiles, playerSkinTilesLen);
 	buildBlastSprite();
+	buildFlameSprites();
 	LoadPaletteObjData(0, spritesPal, spritesPalLen);
+	SetPaletteObj(FLAME_YELLOW, RGB(31,29,10));
+	SetPaletteObj(FLAME_ORANGE, RGB(31,16, 3));
+	SetPaletteObj(FLAME_RED,    RGB(24, 5, 2));
+	SetPaletteObj(GUN_DARK,     RGB( 7, 7, 8));
+	SetPaletteObj(GUN_LIGHT,    RGB(17,17,19));
+	SetPaletteObj(FLAME_SMOKE,  RGB(12,11,11));
 	
 	loadProgress();
 	loadArena(currentArena);
@@ -415,7 +437,7 @@ void gameInit(){
 	SetObject(0,
 	          ATTR0_SHAPE(shape) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(player.getY()+1),
 			  ATTR1_SIZE(0) | ATTR1_X(player.getX()+4),
-			  ATTR2_ID8(22+weapon));
+			  ATTR2_ID8(weaponTile(weapon)));
 	
 	//Crate
 	SetObject(1,
@@ -555,6 +577,27 @@ int main()
 					}
 				}else if(bullets.at(i).getType() == 5){
 					updateGrenade(bullets.at(i));
+				}else if(bullets.at(i).getType() == 10){
+					//Flame - quick out of the nozzle, slowing to a lick as it
+					//burns down, drifting a little and curling upwards at the
+					//end. Scenery puts it out.
+					Bullet& flame = bullets.at(i);
+					int age = flame.getCharger();
+					int speed = (age < 6) ? 3 : (age < 12) ? 2 : 1;
+					int dy = 0;
+					if((age % 2) == 0)dy = flame.getLift();
+					if(age >= 10 && (age % 3) == 0)dy = -1;
+					
+					if(!tryMove(flame.getDir() ? speed : -speed, dy,
+					            flame.getDir() ? flame.getWidth() : 0, flame.getHeight()/2 + 1, flame)){
+						flame.setDead(true);
+					}
+					
+					if(flame.charge())flame.setDead(true);
+					
+					int shown = (flame.getCharger() * FLAME_FRAMES) / 18;
+					if(shown >= FLAME_FRAMES)shown = FLAME_FRAMES - 1;
+					ObjBuffer[i+OBJ_BULLET_BASE].attr2 = ATTR2_ID8(FLAME_TILE + shown);
 				}else if(bullets.at(i).getType() == 7){
 					if(bullets.at(i).charge())bullets.at(i).setDead(true);
 				}else if(bullets.at(i).getType() == 9){
@@ -624,6 +667,14 @@ int main()
 							//A katana swing lands once on each monster it
 							//reaches, however long it stays in contact, and
 							//spins a large monster about
+							if(bullets.at(k).getType() == 10){
+								//A flame burns through, scorching each
+								//monster it passes over once
+								if(bullets.at(k).strike(i)){
+									enemies.at(i).hurt(bullets.at(k).getDamage());
+								}
+								continue;
+							}
 							if(bullets.at(k).getType() == 8){
 								if(!bullets.at(k).strike(i))continue;
 								enemies.at(i).hurt(bullets.at(k).getDamage());
@@ -740,6 +791,12 @@ int main()
 			if(reloadTimer >= 6){
 				shootCoolDown = true;
 			}
+		}else if(weapon == 10){
+			//Flamethrower - a flame every third frame, and each only lives
+			//18, so about six are ever alive at once
+			if(reloadTimer >= 3){
+				shootCoolDown = true;
+			}
 		}else{
 			//Minigun. At 2 frames it fires 30 a second, which is what the pool
 			//size has to be able to carry - a round takes about 56 frames to
@@ -778,7 +835,7 @@ int main()
 		if(weapon == 8)ObjBuffer[0].attr0 |= ATTR0_SHAPE(1);
 		else ObjBuffer[0].attr0 &= ~(ATTR0_SHAPE(1));
 		
-		ObjBuffer[0].attr2 = ATTR2_ID8(22+weapon);
+		ObjBuffer[0].attr2 = ATTR2_ID8(weaponTile(weapon));
 			
 		for(int i = 0; i < enemies.size(); i++){
 			if(!enemies.at(i).isDead()){
@@ -1244,6 +1301,7 @@ const char* weaponName(int weapon){
 		case 7:return "LASER GUN";
 		case 8:return "MINIGUN";
 		case 9:return "KATANA";
+		case 10:return "FLAMETHROWER";
 	}
 	return "";
 }
@@ -1412,6 +1470,81 @@ void buildBlastSprite(){
 		LoadTileData(4, BLAST_TILE + (ty*16) + tx, tile, 64);
 	}
 	}
+}
+
+//Rows of an 8x8 picture, one character per pixel
+void loadPicture(int tileNum, const char* rows[8]){
+	uint8_t tile[64];
+	
+	for(int y = 0; y < 8; y++){
+		for(int x = 0; x < 8; x++){
+			uint8_t colour = 0;
+			switch(rows[y][x]){
+				case 'y': colour = FLAME_YELLOW; break;
+				case 'o': colour = FLAME_ORANGE; break;
+				case 'r': colour = FLAME_RED;    break;
+				case 'D': colour = GUN_DARK;     break;
+				case 'L': colour = GUN_LIGHT;    break;
+				case 's': colour = FLAME_SMOKE;  break;
+			}
+			tile[(y*8) + x] = colour;
+		}
+	}
+	LoadTileData(4, tileNum, tile, 64);
+}
+
+void buildFlameSprites(){
+	//Drawn facing right, like the rest of the weapons
+	const char* icon[8] = {
+		"........",
+		"........",
+		"......o.",
+		"DDDDDDDy",
+		"DLLLLLD.",
+		"DDDDDD..",
+		".DD.D...",
+		".DD.....",
+	};
+	const char* big[8] = {
+		"..oo....",
+		".ooyoo..",
+		"ooyyyoo.",
+		"oyyyyyor",
+		"oyyyyyor",
+		"ooyyyoo.",
+		".ooyoo..",
+		"..oo....",
+	};
+	const char* middle[8] = {
+		"........",
+		"...rr...",
+		"..rooor.",
+		".rooyor.",
+		".rooyor.",
+		"..rooor.",
+		"...rr...",
+		"........",
+	};
+	const char* small[8] = {
+		"........",
+		"........",
+		"...ss...",
+		"..srrs..",
+		"..sros..",
+		"...ss...",
+		"........",
+		"........",
+	};
+	
+	loadPicture(FLAME_TILE,     big);
+	loadPicture(FLAME_TILE + 1, middle);
+	loadPicture(FLAME_TILE + 2, small);
+	loadPicture(FLAME_ICON_TILE, icon);
+}
+
+int weaponTile(int weapon){
+	if(weapon == 10)return FLAME_ICON_TILE;
+	return 22 + weapon;
 }
 
 void updateExplosion(){
@@ -1649,6 +1782,17 @@ void shoot(){
 	break;
 	case 9://katana
 		spawnBullet(8);
+	break;
+	case 10://flamethrower
+		{
+			//Out of the nozzle, with a little spread up and down
+			int bullet = spawnBullet(10);
+			if(bullet >= 0){
+				if(player.getDir())bullets.at(bullet).move(player.getX()+10, player.getY()+1);
+				else bullets.at(bullet).move(player.getX()-8, player.getY()+1);
+				bullets.at(bullet).setLift(rand() % 3 + (-1));
+			}
+		}
 	break;
 	}
 }

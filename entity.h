@@ -228,6 +228,7 @@ public:
 		else if(type == 5)chargeTime = 90;	//grenade fuse, a second and a half
 		else if(type == 8)chargeTime = 8;	//a katana swing is brief
 		else if(type == 9)chargeTime = 8;	//blast debris fades quickly
+		else if(type == 10)chargeTime = 18;	//flames burn out after ~40px
 		else chargeTime = 15;
 		bounce = false;
 		width = 4;
@@ -237,12 +238,16 @@ public:
 		if(type == 8){
 			width = 16;
 			height = 12;
+		}else if(type == 10){
+			width = 6;
+			height = 6;
 		}
 		dead = false;
 		//The slash borrows the blade sprite and debris the machine gun round;
 		//tiles 48 and up belong to the monsters
 		if(type == 8)frame = 31;
 		else if(type == 9)frame = 41;
+		else if(type == 10)frame = 290;	//FLAME_TILE, drawn at start-up
 		else frame = 40+type;
 	}
 	
@@ -262,6 +267,7 @@ public:
 		if(type == 1 || type == 3)return 1;
 		if(type == 2)return 3;
 		if(type == 8)return 3;	//one swing kills a small monster, two a large one
+		if(type == 10)return 1;	//two flames for a small monster, five a large
 		return 0;
 	}
 	
