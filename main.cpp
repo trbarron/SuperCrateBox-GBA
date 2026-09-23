@@ -2238,7 +2238,7 @@ void spawnMonster(){
 	int startFrame = 32;
 	if(type)startFrame = 16;
 	
-	int i = 0;
+	int i = -1;
 	
 	int spawnX = arenas[currentArena].monsterX;
 	int spawnY = arenas[currentArena].monsterY;
@@ -2255,6 +2255,11 @@ void spawnMonster(){
 			}
 		}
 	}
+	
+	//Every monster is alive. Now the fire sends them round again rather than
+	//removing them, a full house is common, and without this slot 0's sprite
+	//would be reset to the new monster's size while the monster stayed put.
+	if(i < 0)return;
 	
 	SetObject(i+OBJ_ENEMY_BASE,
 			ATTR0_SHAPE(0) | ATTR0_8BPP | ATTR0_REG | ATTR0_Y(enemies.at(i).getY()),
