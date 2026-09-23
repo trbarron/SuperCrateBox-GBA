@@ -198,13 +198,13 @@ public:
 		return angry;
 	}
 	
-	//Out of the fire and back in at the top, red, faster and at full health
+	//Out of the fire and back in at the top, red and faster. Whatever damage
+	//it had taken, it still has.
 	void enrage(int x, int y){
 		this->x = x;
 		this->y = y;
 		angry = true;
 		dead = false;
-		health = size ? 2 : 5;
 	}
 	
 	void updateFrame(){

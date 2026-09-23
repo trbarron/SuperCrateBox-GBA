@@ -30,6 +30,8 @@ void buildFlameSprites();
 void buildAngrySprites();
 int monsterTile(Monster& monster);
 void applyShake();
+void countKill(Monster& monster);
+bool pauseGame();
 int weaponTile(int weapon);
 void updateExplosion();
 
@@ -257,6 +259,8 @@ int score;
 int highScore;
 int lifetimeCrates;
 int lifetimeDeaths;
+int lifetimeKills;			//every monster, angry ones included
+int lifetimeAngryKills;
 int selectedSkin;
 
 //Progress is only written to SRAM when it has actually changed, and never
@@ -488,6 +492,7 @@ int main()
 #endif
 
 	int meterCoolDown = 0;
+	bool startWasDown = false;
 	
 	//Free-running timer for the frame meter
 	REG_TM0D = 0;
@@ -501,6 +506,26 @@ int main()
 			showMeter = !showMeter;
 			meterCoolDown = 30;
 		}
+		
+		//START pauses, on a fresh press only, so holding it doesn't flicker
+		//in and out. Never during the benchmark.
+		bool startDown = (REG_KEYINPUT & KEY_START) == 0;
+		if(startDown && !startWasDown && benchFrames <= 0){
+			if(pauseGame()){
+				//Quit from the pause menu
+				saveProgress();
+				enterMenu(0);
+				startWasDown = true;
+				continue;
+			}
+			startDown = true;
+			
+			//The pause shouldn't read as one enormous frame on the meter
+			REG_TM0CNT = 0;
+			REG_TM0D = 0;
+			REG_TM0CNT = TM_ENABLE | TM_FREQ_64;
+		}
+		startWasDown = startDown;
 		
 		//INPUT
 		int keys = readKeys();
@@ -745,7 +770,9 @@ int main()
 					}
 				}
 				
-				if(!enemies.at(i).isDead() && checkEntityCollision(player, enemies.at(i))){
+				if(enemies.at(i).isDead()){
+					countKill(enemies.at(i));
+				}else if(checkEntityCollision(player, enemies.at(i))){
 					player.setDead(true);
 				}
 			}
@@ -1045,7 +1072,8 @@ void enterMenu(int menu){
 	int arenaChoice = 0;
 	int keyPressCoolDown = 30;
 	int navCoolDown = 0;
-	const int MAIN_MENU_OPTIONS = 5;
+	const int MAIN_MENU_OPTIONS = 2;
+	const int EXTRAS_OPTIONS = 5;
 	if(menu == 0)ClearObjects();
 	
 	//MENU LOOP
@@ -1079,40 +1107,89 @@ void enterMenu(int menu){
 				if(option == 0){
 					active = false;
 					gameInit();
-				}else if(option == 1){
+				}else{
+					menu = 6;
+					option = 0;
+					keyPressCoolDown = 30;
+				}
+			}
+			drawText(60,18,"Super Crate Box");
+			drawMenuOption( 62, "PLAY",   option == 0);
+			drawMenuOption( 80, "EXTRAS", option == 1);
+			drawTextCentered(126, arenas[currentArena].name);
+			drawTextCentered(140,"BEST " + toString(highScore));
+			break;
+			
+			case 6://Extras
+			if((REG_KEYINPUT & KEY_UP) == 0 && navCoolDown == 0){
+				option--;
+				if(option < 0)option = EXTRAS_OPTIONS-1;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_DOWN) == 0 && navCoolDown == 0){
+				option++;
+				if(option >= EXTRAS_OPTIONS)option = 0;
+				navCoolDown = 12;
+			}
+			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
+				if(option == 0){
 					menu = 3;
 					skinChoice = selectedSkin;
-					keyPressCoolDown = 30;
-				}else if(option == 2){
+				}else if(option == 1){
 					menu = 5;
 					arenaChoice = currentArena;
-					keyPressCoolDown = 30;
+				}else if(option == 2){
+					menu = 7;
 				}else if(option == 3){
 					active = false;
 					startBenchmark();
 				}else{
 					menu = 1;
-					keyPressCoolDown = 30;
 				}
-			}
-			drawText(60,18,"Super Crate Box");
-			drawMenuOption( 48, "PLAY",      option == 0);
-			drawMenuOption( 62, "SKINS",     option == 1);
-			drawMenuOption( 76, "ARENA",     option == 2);
-			drawMenuOption( 90, "BENCHMARK", option == 3);
-			drawMenuOption(104, "CREDITS",   option == 4);
-			drawTextCentered(126, arenas[currentArena].name);
-			drawTextCentered(140,"BEST " + toString(highScore));
-			break;
-			
-			case 1://Credits
-			if((REG_KEYINPUT & KEY_A) == 0 && keyPressCoolDown == 0){
-				menu = 0;
 				keyPressCoolDown = 30;
 			}
 			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
 				menu = 0;
+				option = 1;
 				keyPressCoolDown = 30;
+				break;
+			}
+			drawTextCentered(18, "EXTRAS");
+			drawMenuOption( 48, "SKINS",     option == 0);
+			drawMenuOption( 62, "ARENA",     option == 1);
+			drawMenuOption( 76, "STATS",     option == 2);
+			drawMenuOption( 90, "BENCHMARK", option == 3);
+			drawMenuOption(104, "ABOUT",     option == 4);
+			drawTextCentered(137, "B = BACK");
+			break;
+			
+			case 7://Stats
+			if(((REG_KEYINPUT & KEY_A) == 0 || (REG_KEYINPUT & KEY_B) == 0) && keyPressCoolDown == 0){
+				menu = 6;
+				option = 2;
+				keyPressCoolDown = 30;
+				break;
+			}
+			drawTextCentered(18, "STATS");
+			drawText(28, 44, "BEST SCORE");
+			drawText(164, 44, toString(highScore));
+			drawText(28, 58, "CRATES");
+			drawText(164, 58, toString(lifetimeCrates));
+			drawText(28, 72, "KILLS");
+			drawText(164, 72, toString(lifetimeKills));
+			drawText(28, 86, "ANGRY KILLS");
+			drawText(164, 86, toString(lifetimeAngryKills));
+			drawText(28, 100, "DEATHS");
+			drawText(164, 100, toString(lifetimeDeaths));
+			drawTextCentered(137, "B = BACK");
+			break;
+			
+			case 1://About
+			if(((REG_KEYINPUT & KEY_A) == 0 || (REG_KEYINPUT & KEY_B) == 0) && keyPressCoolDown == 0){
+				menu = 6;
+				option = 4;
+				keyPressCoolDown = 30;
+				break;
 			}
 			
 			drawText(30, 20, "GBA - Super Crate Box");
@@ -1150,8 +1227,8 @@ void enterMenu(int menu){
 				startBenchmark();
 			}
 			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
-				menu = 0;
-				option = 2;
+				menu = 6;
+				option = 3;
 				ClearObjects();
 				keyPressCoolDown = 30;
 			}
@@ -1206,8 +1283,8 @@ void enterMenu(int menu){
 				keyPressCoolDown = 15;
 			}
 			if((REG_KEYINPUT & KEY_B) == 0 && keyPressCoolDown == 0){
-				menu = 0;
-				option = 2;
+				menu = 6;
+				option = 1;
 				keyPressCoolDown = 30;
 				break;
 			}
@@ -1252,8 +1329,8 @@ void enterMenu(int menu){
 				//Put the equipped skin back before leaving the preview
 				SetObject(0, ATTR0_HIDE, 0, 0);
 				applySkin(selectedSkin);
-				menu = 0;
-				option = 1;
+				menu = 6;
+				option = 0;
 				keyPressCoolDown = 30;
 				break;
 			}
@@ -1716,6 +1793,45 @@ int weaponTile(int weapon){
 	return 22 + weapon;
 }
 
+//The benchmark plays invincibly with scripted input, so it doesn't count
+void countKill(Monster& monster){
+	if(benchFrames > 0)return;
+	lifetimeKills++;
+	if(monster.getAngry())lifetimeAngryKills++;
+	progressDirty = true;
+}
+
+//Freeze everything where it is until START again. Returns true if the player
+//chose to quit to the main menu instead.
+bool pauseGame(){
+	bool startHeld = true;	//it was just pressed to get here
+	bool selectHeld = (REG_KEYINPUT & KEY_SELECT) == 0;
+	
+	while(true){
+		bool startDown = (REG_KEYINPUT & KEY_START) == 0;
+		bool selectDown = (REG_KEYINPUT & KEY_SELECT) == 0;
+		
+		if(startDown && !startHeld)break;
+		if(selectDown && !selectHeld){
+			clearText();
+			return true;
+		}
+		startHeld = startDown;
+		selectHeld = selectDown;
+		
+		clearText();
+		drawTextCentered(60, "PAUSED");
+		drawTextCentered(84, "START = RESUME");
+		drawTextCentered(98, "SELECT = QUIT");
+		
+		WaitVSync();
+		UpdateObjects();
+	}
+	
+	clearText();
+	return false;
+}
+
 void updateExplosion(){
 	if(explosionTimer <= 0){
 		ObjBuffer[OBJ_BLAST].attr0 = ATTR0_HIDE;
@@ -1747,7 +1863,10 @@ void updateExplosion(){
 			int dx = (enemies.at(i).getX() + (enemies.at(i).getWidth()/2)) - explosionX;
 			int dy = (enemies.at(i).getY() + (enemies.at(i).getHeight()/2)) - explosionY;
 			
-			if((dx*dx) + (dy*dy) <= radius * radius)enemies.at(i).setDead(true);
+			if((dx*dx) + (dy*dy) <= radius * radius){
+				enemies.at(i).setDead(true);
+				countKill(enemies.at(i));
+			}
 		}
 	}
 	
@@ -1824,26 +1943,43 @@ std::string skinRequirement(int skin){
 }
 
 //Saved progress in SRAM:
-//  [0..3]  tag "SCB4"
+//  [0..3]  tag "SCB5"
 //  [4..5]  best score anywhere
 //  [6..9]  crates collected across every game
 //  [10]    equipped skin
 //  [11]    chosen arena
 //  [12..]  best score in each arena, two bytes each
 //  then    deaths across every game, four bytes
+//  then    monsters killed, then angry monsters killed, four bytes each
 const int SRAM_DEATHS = 12 + (NUM_ARENAS * 2);
+const int SRAM_KILLS = SRAM_DEATHS + 4;
+const int SRAM_ANGRY_KILLS = SRAM_KILLS + 4;
+
+int readSram32(int at){
+	return SRAM_BASE[at] | (SRAM_BASE[at+1] << 8)
+	     | (SRAM_BASE[at+2] << 16) | (SRAM_BASE[at+3] << 24);
+}
+
+void writeSram32(int at, int value){
+	SRAM_BASE[at]   = value & 0xFF;
+	SRAM_BASE[at+1] = (value >> 8) & 0xFF;
+	SRAM_BASE[at+2] = (value >> 16) & 0xFF;
+	SRAM_BASE[at+3] = (value >> 24) & 0xFF;
+}
 
 void loadProgress(){
 	highScore = 0;
 	lifetimeCrates = 0;
 	lifetimeDeaths = 0;
+	lifetimeKills = 0;
+	lifetimeAngryKills = 0;
 	selectedSkin = 0;
 	currentArena = 0;
 	for(int i = 0; i < NUM_ARENAS; i++)arenaBest[i] = 0;
 	
 	bool haveTag = (SRAM_BASE[0] == 'S' && SRAM_BASE[1] == 'C' && SRAM_BASE[2] == 'B');
 	
-	if(haveTag && (SRAM_BASE[3] == '4' || SRAM_BASE[3] == '3')){
+	if(haveTag && SRAM_BASE[3] >= '3' && SRAM_BASE[3] <= '5'){
 		highScore = SRAM_BASE[4] | (SRAM_BASE[5] << 8);
 		lifetimeCrates = SRAM_BASE[6] | (SRAM_BASE[7] << 8)
 		               | (SRAM_BASE[8] << 16) | (SRAM_BASE[9] << 24);
@@ -1854,10 +1990,11 @@ void loadProgress(){
 			arenaBest[i] = SRAM_BASE[12 + (i*2)] | (SRAM_BASE[13 + (i*2)] << 8);
 		}
 		
-		//Deaths only started being counted in version 4
-		if(SRAM_BASE[3] == '4'){
-			lifetimeDeaths = SRAM_BASE[SRAM_DEATHS] | (SRAM_BASE[SRAM_DEATHS+1] << 8)
-			               | (SRAM_BASE[SRAM_DEATHS+2] << 16) | (SRAM_BASE[SRAM_DEATHS+3] << 24);
+		//Deaths only started being counted in version 4, kills in 5
+		if(SRAM_BASE[3] >= '4')lifetimeDeaths = readSram32(SRAM_DEATHS);
+		if(SRAM_BASE[3] >= '5'){
+			lifetimeKills = readSram32(SRAM_KILLS);
+			lifetimeAngryKills = readSram32(SRAM_ANGRY_KILLS);
 		}else{
 			progressDirty = true;
 		}
@@ -1890,7 +2027,7 @@ void saveProgress(){
 	SRAM_BASE[0] = 'S';
 	SRAM_BASE[1] = 'C';
 	SRAM_BASE[2] = 'B';
-	SRAM_BASE[3] = '4';
+	SRAM_BASE[3] = '5';
 	SRAM_BASE[4] = highScore & 0xFF;
 	SRAM_BASE[5] = (highScore >> 8) & 0xFF;
 	SRAM_BASE[6] = lifetimeCrates & 0xFF;
@@ -1905,10 +2042,9 @@ void saveProgress(){
 		SRAM_BASE[13 + (i*2)] = (arenaBest[i] >> 8) & 0xFF;
 	}
 	
-	SRAM_BASE[SRAM_DEATHS]   = lifetimeDeaths & 0xFF;
-	SRAM_BASE[SRAM_DEATHS+1] = (lifetimeDeaths >> 8) & 0xFF;
-	SRAM_BASE[SRAM_DEATHS+2] = (lifetimeDeaths >> 16) & 0xFF;
-	SRAM_BASE[SRAM_DEATHS+3] = (lifetimeDeaths >> 24) & 0xFF;
+	writeSram32(SRAM_DEATHS, lifetimeDeaths);
+	writeSram32(SRAM_KILLS, lifetimeKills);
+	writeSram32(SRAM_ANGRY_KILLS, lifetimeAngryKills);
 	
 	progressDirty = false;
 }
