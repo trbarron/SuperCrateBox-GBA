@@ -155,6 +155,7 @@ public:
 class Monster: public Entity{
 private:	
 	bool size;
+	bool angry;
 	int health;
 	
 public:
@@ -171,6 +172,7 @@ public:
 			height = 16;
 			health = 5;
 		}
+		angry = false;
 		dir = true;
 		dead = false;
 		frame = 0;
@@ -192,6 +194,19 @@ public:
 		return size;
 	}
 	
+	bool getAngry(){
+		return angry;
+	}
+	
+	//Out of the fire and back in at the top, red and faster. Whatever damage
+	//it had taken, it still has.
+	void enrage(int x, int y){
+		this->x = x;
+		this->y = y;
+		angry = true;
+		dead = false;
+	}
+	
 	void updateFrame(){
 		if(size){
 			frame++;
@@ -211,6 +226,8 @@ private:
 	int lift;
 	int charger;
 	int chargeTime;
+	int speed;		//grenades: sideways pixels per frame, slowed by bounces
+	int hitMask;	//katana: monsters this swing has already struck
 	bool bounce;
 public:
 	Bullet(int x, int y, int type, int weapon){
@@ -220,18 +237,32 @@ public:
 		originWeapon = weapon;
 		lift = 0;
 		charger = 0;
+		speed = 2;
+		hitMask = 0;
 		if(type == 6)chargeTime = 60;
-		else if(type == 8)chargeTime = 3;	//a katana swing is brief
-		else if(type == 9)chargeTime = 8;	//blast debris fades quickly
+		else if(type == 5)chargeTime = 90;	//grenade fuse, a second and a half
+		else if(type == 8)chargeTime = 8;	//a katana swing is brief
+		else if(type == 9)chargeTime = 12;	//blast debris burns out quickly
+		else if(type == 10)chargeTime = 18;	//flames burn out after ~40px
 		else chargeTime = 15;
 		bounce = false;
 		width = 4;
 		height = 4;
+		//The slash reaches well in front of the player and a little above,
+		//so it meets a monster before the monster meets the player
+		if(type == 8){
+			width = 16;
+			height = 12;
+		}else if(type == 10){
+			width = 6;
+			height = 6;
+		}
 		dead = false;
-		//The slash borrows the blade sprite and debris the machine gun round;
+		//The slash borrows the blade sprite and debris the flame frames;
 		//tiles 48 and up belong to the monsters
 		if(type == 8)frame = 31;
-		else if(type == 9)frame = 41;
+		else if(type == 9)frame = 290;	//FLAME_TILE
+		else if(type == 10)frame = 290;	//FLAME_TILE, drawn at start-up
 		else frame = 40+type;
 	}
 	
@@ -250,7 +281,8 @@ public:
 		if(type == 0 || type == 4 || type == 5 || type == 6 || type == 7)return 5;
 		if(type == 1 || type == 3)return 1;
 		if(type == 2)return 3;
-		if(type == 8)return 2;	//one hit kills a small monster, two a large one
+		if(type == 8)return 3;	//one swing kills a small monster, two a large one
+		if(type == 10)return 1;	//two flames for a small monster, five a large
 		return 0;
 	}
 	
@@ -274,6 +306,21 @@ public:
 	
 	int getCharger(){
 		return charger;
+	}
+	
+	int getSpeed(){
+		return speed;
+	}
+	
+	void setSpeed(int speed){
+		this->speed = speed;
+	}
+	
+	//True the first time this swing reaches monster i, false after that
+	bool strike(int i){
+		if(hitMask & (1 << i))return false;
+		hitMask |= (1 << i);
+		return true;
 	}
 	
 	bool getBounce(){

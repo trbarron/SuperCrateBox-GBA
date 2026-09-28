@@ -3,7 +3,7 @@
 # frame-time figures it leaves in cartridge SRAM.
 #
 # The ROM runs a fixed thirty second scripted game with the player invincible,
-# the monster pool kept full and the weapon rotated through all ten, then
+# the monster pool kept full and the weapon rotated through all eleven, then
 # writes its results to SRAM offset 64 over and over, so whenever the emulator
 # next flushes its battery file the finished figures are in it.
 #
